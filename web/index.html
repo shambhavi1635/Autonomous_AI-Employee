@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your AI Colleague</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<button id="sidebar-toggle" title="Previous runs" aria-label="Previous runs">
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+       stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/>
+       <line x1="3" y1="18" x2="21" y2="18"/></svg>
+</button>
+
+<aside id="sidebar">
+  <div class="sidebar-head">
+    <h2>Previous runs</h2>
+    <button class="btn-ghost" id="new-run" style="padding:5px 12px;font-size:12px;">New</button>
+  </div>
+  <div class="sidebar-scroll" id="run-list"></div>
+  <div class="sidebar-foot" id="sidebar-foot"></div>
+</aside>
+
+<main>
+  <div class="hero">
+    <h1>Your AI Colleague!</h1>
+    <p>Describe a task. The agent will propose a plan and wait for your approval before doing anything.</p>
+  </div>
+
+  <div id="composer-wrap">
+    <div class="composer">
+      <textarea id="task" placeholder="e.g. File the Globex invoice from the invoices folder into the ledger"
+                spellcheck="false"></textarea>
+      <div class="composer-bar">
+        <span class="hint"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> to run</span>
+        <button class="btn-primary" id="execute">Execute</button>
+      </div>
+    </div>
+    <div class="examples" id="examples"></div>
+  </div>
+
+  <div id="workspace"></div>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

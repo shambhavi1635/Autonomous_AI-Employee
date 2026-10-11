@@ -36,7 +36,9 @@ cannot argue its way past it.
 from __future__ import annotations
 
 import atexit
+import queue
 import re
+import threading
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -56,21 +58,82 @@ _CONSEQUENTIAL = (
     "accept", "agree", "subscribe", "unsubscribe", "discard", "archive",
 )
 
+# Playwright's sync API belongs to the thread that created it -- calling
+# it from another raises "cannot switch to a different thread". The web
+# server runs each request in a worker from a pool, so step 1 of a plan
+# and step 3 of the same plan arrive on different threads, and the second
+# one fails while the browser sits there visibly working.
+#
+# So the browser gets one permanent thread of its own, and every tool
+# sends it work through a queue. It is the standard shape for wrapping a
+# thread-affine library, and it also means the session survives between
+# steps instead of being rebuilt.
 _playwright: Any = None
 _context: Any = None
+_commands: queue.Queue = queue.Queue()
+_worker: threading.Thread | None = None
+_started = threading.Event()
+_startup_error: Exception | None = None
 
 
 class BrowserError(RuntimeError):
     """The browser could not be driven."""
 
 
-def _browser():
-    """The persistent browser context, started on first use.
+def _worker_loop() -> None:
+    """Owns the browser. Starts it, then serves commands until told to stop."""
+    global _playwright, _context, _startup_error
 
-    Kept at module level so a session survives between tool calls: step
-    2 of a plan lands on the page step 1 opened. Starting a fresh
-    browser per call would log the user out of everything, every time.
-    """
+    try:
+        _launch()
+    except Exception as exc:
+        _startup_error = exc
+    finally:
+        _started.set()
+
+    while True:
+        job, reply = _commands.get()
+        if job is None:
+            break
+        try:
+            reply.put(("ok", job()))
+        except Exception as exc:
+            reply.put(("error", exc))
+
+    try:
+        if _context is not None:
+            _context.close()
+        if _playwright is not None:
+            _playwright.stop()
+    except Exception:
+        pass
+
+
+def _call(job):
+    """Run `job` on the browser thread and return its result here."""
+    global _worker
+
+    if _worker is None or not _worker.is_alive():
+        _started.clear()
+        _worker = threading.Thread(target=_worker_loop, daemon=True,
+                                   name="browser")
+        _worker.start()
+        atexit.register(close_browser)
+
+    _started.wait(timeout=90)
+    if _startup_error is not None:
+        raise BrowserError(f"Could not start the browser: {_startup_error}")
+
+    reply: queue.Queue = queue.Queue(maxsize=1)
+    _commands.put((job, reply))
+    kind, value = reply.get()
+    if kind == "error":
+        raise value
+    return value
+
+
+def _launch():
+    """Start Playwright. Only ever called on the browser thread."""
     global _playwright, _context
     if _context is not None:
         return _context
@@ -84,13 +147,6 @@ def _browser():
         ) from exc
 
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-
-    # A persistent profile can only be held by one browser at a time.
-    # Without this, a process that exits while its Chromium is still
-    # running leaves the profile locked, and the next run dies with an
-    # EPIPE from deep inside the Playwright driver -- an error that says
-    # nothing about the actual cause.
-    atexit.register(close_browser)
 
     try:
         _playwright = sync_playwright().start()
@@ -106,10 +162,13 @@ def _browser():
         )
     except Exception as exc:
         _playwright = _context = None
-        if "ProcessSingleton" in str(exc) or "already running" in str(exc).lower():
+        message = str(exc).lower()
+        if any(s in message for s in ("processsingleton", "already running",
+                                      "already in use", "existing browser session")):
             raise BrowserError(
-                "Another browser is already using the agent's profile. "
-                "Close it and try again."
+                "Another Chromium is still holding the agent's browser "
+                "profile -- usually one left behind by a previous run. "
+                "Close it, or run scripts/close_browser.py, and try again."
             ) from exc
         raise BrowserError(f"Could not start the browser: {exc}") from exc
 
@@ -117,8 +176,8 @@ def _browser():
 
 
 def _page():
-    context = _browser()
-    return context.pages[0] if context.pages else context.new_page()
+    """The active page. Only valid on the browser thread."""
+    return _context.pages[0] if _context.pages else _context.new_page()
 
 
 def _is_consequential(target: str) -> str | None:
@@ -176,14 +235,16 @@ def browser_open(url: str) -> str:
     if not address.startswith(("http://", "https://")):
         address = "https://" + address
 
-    page = _page()
-    try:
-        page.goto(address, wait_until="domcontentloaded", timeout=45000)
-        page.wait_for_timeout(1500)  # let client-rendered pages settle
-    except Exception as exc:
-        raise BrowserError(f"Could not open {address}: {exc}") from exc
+    def job():
+        page = _page()
+        try:
+            page.goto(address, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(1500)  # let client-rendered pages settle
+        except Exception as exc:
+            raise BrowserError(f"Could not open {address}: {exc}") from exc
+        return f"Opened {page.url}\nTitle: {page.title()}"
 
-    return f"Opened {page.url}\nTitle: {page.title()}"
+    return _call(job)
 
 
 @tool(risk=Risk.READ)
@@ -193,16 +254,19 @@ def browser_read(limit: int = 3000) -> str:
     Use this to see what is on screen before deciding what to click or
     type. Returns text only -- layout and images are lost.
     """
-    page = _page()
-    try:
-        text = page.inner_text("body")
-    except Exception as exc:
-        raise BrowserError(f"Could not read the page: {exc}") from exc
+    def job():
+        page = _page()
+        try:
+            text = page.inner_text("body")
+        except Exception as exc:
+            raise BrowserError(f"Could not read the page: {exc}") from exc
 
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    if len(text) > limit:
-        text = text[:limit] + f"\n... [{len(text) - limit} more characters]"
-    return f"{page.url}\n\n{text}"
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        if len(text) > limit:
+            text = text[:limit] + f"\n... [{len(text) - limit} more characters]"
+        return f"{page.url}\n\n{text}"
+
+    return _call(job)
 
 
 @tool(risk=Risk.WRITE)
@@ -213,23 +277,25 @@ def browser_type(field: str, text: str) -> str:
     screen, for example 'Search', 'To' or 'Subject'. Typing changes only
     what is on screen -- nothing is submitted until something is clicked.
     """
-    page = _page()
-    attempts = [
-        lambda: page.get_by_label(field, exact=False),
-        lambda: page.get_by_placeholder(field, exact=False),
-        lambda: page.get_by_role("textbox", name=field, exact=False),
-    ]
-    for build in attempts:
-        try:
-            locator = build()
-            if locator.count() > 0:
-                locator.first.fill(text)
-                return f"Typed {len(text)} characters into {field!r}."
-        except Exception:
-            continue
-    raise BrowserError(
-        f"No field matching {field!r}. Use browser_read to see the page."
-    )
+    def job():
+        page = _page()
+        for build in (
+            lambda: page.get_by_label(field, exact=False),
+            lambda: page.get_by_placeholder(field, exact=False),
+            lambda: page.get_by_role("textbox", name=field, exact=False),
+        ):
+            try:
+                locator = build()
+                if locator.count() > 0:
+                    locator.first.fill(text)
+                    return f"Typed {len(text)} characters into {field!r}."
+            except Exception:
+                continue
+        raise BrowserError(
+            f"No field matching {field!r}. Use browser_read to see the page."
+        )
+
+    return _call(job)
 
 
 @tool(risk=Risk.WRITE)
@@ -249,10 +315,13 @@ def browser_click(target: str) -> str:
             "human exactly what will be clicked and waits for approval."
         )
 
-    page = _page()
-    _find(page, target).click()
-    page.wait_for_timeout(1200)
-    return f"Clicked {target!r}. Now on: {page.title()}"
+    def job():
+        page = _page()
+        _find(page, target).click()
+        page.wait_for_timeout(1200)
+        return f"Clicked {target!r}. Now on: {page.title()}"
+
+    return _call(job)
 
 
 @tool(risk=Risk.IRREVERSIBLE)
@@ -262,10 +331,13 @@ def browser_click_confirmed(target: str) -> str:
     Use this only for the final, committing action. The human is shown
     the exact text to be clicked and must approve before it happens.
     """
-    page = _page()
-    _find(page, target).click()
-    page.wait_for_timeout(2000)
-    return f"Clicked {target!r}. Now on: {page.title()}"
+    def job():
+        page = _page()
+        _find(page, target).click()
+        page.wait_for_timeout(2000)
+        return f"Clicked {target!r}. Now on: {page.title()}"
+
+    return _call(job)
 
 
 @tool(risk=Risk.WRITE)
@@ -292,12 +364,16 @@ def gmail_compose(to: str, subject: str, body: str) -> str:
         {"view": "cm", "fs": "1", "to": to.strip(),
          "su": subject.strip(), "body": body}
     )
-    page = _page()
-    page.goto(f"https://mail.google.com/mail/?{query}",
-              wait_until="domcontentloaded", timeout=45000)
-    page.wait_for_timeout(2500)
+    def job():
+        page = _page()
+        page.goto(f"https://mail.google.com/mail/?{query}",
+                  wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(2500)
+        return page.url
 
-    if "accounts.google.com" in page.url or "signin" in page.url.lower():
+    url = _call(job)
+
+    if "accounts.google.com" in url or "signin" in url.lower():
         return (
             "Gmail opened but this browser profile is not signed in. "
             "Sign in once in the open window; the session is kept for "
@@ -312,13 +388,16 @@ def gmail_compose(to: str, subject: str, body: str) -> str:
 
 
 def close_browser() -> None:
-    """Shut the browser down. Only for tests and cleanup."""
-    global _playwright, _context
-    try:
-        if _context is not None:
-            _context.close()
-        if _playwright is not None:
-            _playwright.stop()
-    except Exception:
-        pass
+    """Shut the browser down.
+
+    Sends a stop signal rather than closing anything here: the browser
+    belongs to its own thread, and closing it from this one would hit
+    the same thread-affinity error the worker exists to avoid.
+    """
+    global _worker, _context, _playwright
+    if _worker is not None and _worker.is_alive():
+        _commands.put((None, None))
+        _worker.join(timeout=10)
+    _worker = None
     _context = _playwright = None
+    _started.clear()

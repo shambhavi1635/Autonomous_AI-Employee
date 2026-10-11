@@ -255,6 +255,16 @@ class RepairedStep(BaseModel):
     why: str = Field(description="One sentence: what was wrong and what changed")
 
 
+_ESCAPING_REMINDER = """
+
+Your previous answer was not valid JSON. arguments_json must be a single
+JSON object written as a string, so every quote, newline and backslash
+inside a value has to be escaped: \" for a quote, \n for a newline.
+Return the whole value, correctly escaped -- do not shorten it to avoid
+the problem.
+"""
+
+
 class ResolvedArguments(BaseModel):
     arguments_json: str = Field(
         description='The concrete arguments as a JSON object string'

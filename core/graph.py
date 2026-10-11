@@ -169,7 +169,16 @@ def step_node(state: AgentState) -> AgentState:
     try:
         arguments = resolve_arguments(step, outputs, client=LLMClient())
     except ExecutionError as exc:
-        return {"status": "failed", "message": str(exc)}
+        # Recorded as a failed step rather than killing the run. Failing
+        # to resolve an argument is a step-level problem the ladder can
+        # work on -- repair may rewrite the step to carry less through,
+        # and re-planning may avoid the step entirely. Ending the run
+        # here would throw away everything that already succeeded.
+        failed = StepResult(step_id=step.id, ok=False, error=str(exc))
+        return {
+            "cursor": cursor + 1,
+            "results": state["results"] + [failed.model_dump(mode="json")],
+        }
 
     # The risk tier is taken from the tool registry, never from the plan.
     # A plan is untrusted input -- it can be wrong, and it can be influenced

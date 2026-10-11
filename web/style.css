@@ -1,0 +1,354 @@
+/* Your AI Colleague -- interface styling.
+ *
+ * Dark, with a single warm accent. The restraint is deliberate: this
+ * screen shows a plan someone is about to approve, so colour carries
+ * meaning rather than decoration. Amber is the agent's voice, green and
+ * red are reserved for whether a step passed, and nothing else competes.
+ */
+
+:root {
+    --bg: #07070a;
+    --bg-raised: #0e0e13;
+    --bg-input: #101018;
+    --border: #1e1e28;
+    --border-bright: #2a2a38;
+
+    --accent: #f5c518;          /* the yellow: headings, actions */
+    --accent-dim: #8a7314;
+    --accent-glow: rgba(245, 197, 24, 0.14);
+
+    --text: #e8e8ee;
+    --text-soft: #9a9aa8;
+    --text-faint: #5f5f70;
+
+    --pass: #44d07b;
+    --fail: #ff5f56;
+    --warn: #ffb020;
+
+    --sidebar-width: 290px;
+    --radius: 12px;
+    --font: "Inter", -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
+    --mono: "SF Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    min-height: 100vh;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* The centre glow. Two soft radial washes rather than one, so the
+ * falloff is not a visible ellipse on a large screen. Fixed, so it
+ * stays put while content scrolls past it. */
+body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background:
+        radial-gradient(ellipse 70% 50% at 50% 28%, rgba(245, 197, 24, 0.09), transparent 70%),
+        radial-gradient(ellipse 100% 70% at 50% 0%, rgba(120, 90, 20, 0.07), transparent 65%),
+        radial-gradient(circle at 50% 110%, rgba(40, 40, 70, 0.22), transparent 60%);
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* ----------------------------------------------------------- sidebar */
+#sidebar {
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    width: var(--sidebar-width);
+    background: rgba(10, 10, 14, 0.96);
+    border-right: 1px solid var(--border);
+    backdrop-filter: blur(14px);
+    transform: translateX(calc(var(--sidebar-width) * -1));
+    transition: transform 0.26s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+}
+#sidebar.open { transform: translateX(0); }
+
+.sidebar-head {
+    padding: 20px 20px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+}
+.sidebar-head h2 {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--text-faint);
+}
+
+.sidebar-scroll { overflow-y: auto; flex: 1; padding: 10px; }
+
+.run-item {
+    padding: 11px 13px;
+    border-radius: 9px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    margin-bottom: 5px;
+    transition: background 0.14s, border-color 0.14s;
+}
+.run-item:hover { background: rgba(255, 255, 255, 0.035); }
+.run-item.active { background: var(--accent-glow); border-color: var(--accent-dim); }
+.run-item .task {
+    font-size: 13px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    margin-bottom: 4px;
+}
+.run-item .meta {
+    font-size: 11px; color: var(--text-faint);
+    display: flex; gap: 8px; align-items: center;
+}
+
+.dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+.dot.done { background: var(--pass); }
+.dot.failed { background: var(--fail); }
+.dot.rejected { background: var(--warn); }
+.dot.awaiting_approval, .dot.running { background: var(--accent); }
+.dot.unknown { background: var(--text-faint); }
+
+.sidebar-foot {
+    padding: 14px 20px; border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--text-faint); line-height: 1.8;
+}
+.sidebar-foot code { color: var(--accent-dim); font-family: var(--mono); }
+
+#sidebar-toggle {
+    position: fixed; top: 18px; left: 18px; z-index: 50;
+    width: 40px; height: 40px;
+    /* Overrides the shared button padding. 20px either side of a 40px
+     * box leaves exactly nothing for the icon, which rendered at zero
+     * width -- a visible button with an invisible glyph. */
+    padding: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(18, 18, 24, 0.85);
+    border: 1px solid var(--border-bright);
+    border-radius: 10px;
+    color: var(--text-soft);
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, left 0.26s cubic-bezier(0.4, 0, 0.2, 1);
+    backdrop-filter: blur(8px);
+}
+#sidebar-toggle:hover { color: var(--accent); border-color: var(--accent-dim); }
+#sidebar-toggle.shifted { left: calc(var(--sidebar-width) + 18px); }
+
+/* -------------------------------------------------------------- main */
+main {
+    position: relative; z-index: 1;
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 96px 32px 120px;
+}
+
+.hero { text-align: center; margin-bottom: 44px; }
+.hero h1 {
+    font-size: clamp(38px, 6.5vw, 62px);
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    color: var(--accent);
+    text-shadow: 0 0 46px rgba(245, 197, 24, 0.3);
+    margin-bottom: 14px;
+}
+.hero p {
+    font-size: 13px;
+    color: var(--text-soft);
+    font-weight: 400;
+    letter-spacing: 0.01em;
+}
+
+/* --------------------------------------------------------- composer */
+.composer {
+    background: var(--bg-raised);
+    border: 1px solid var(--border-bright);
+    border-radius: var(--radius);
+    padding: 6px;
+    transition: border-color 0.18s, box-shadow 0.18s;
+}
+.composer:focus-within {
+    border-color: var(--accent-dim);
+    box-shadow: 0 0 0 4px var(--accent-glow);
+}
+
+#task {
+    width: 100%;
+    min-height: 104px;
+    background: transparent;
+    border: none;
+    outline: none;
+    resize: vertical;
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 15px;
+    line-height: 1.65;
+    padding: 15px 16px 6px;
+}
+#task::placeholder { color: var(--text-faint); }
+
+.composer-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px 9px 16px;
+}
+.hint { font-size: 11px; color: var(--text-faint); }
+.hint kbd {
+    font-family: var(--mono); font-size: 10px;
+    background: var(--bg-input); border: 1px solid var(--border-bright);
+    border-radius: 4px; padding: 1px 5px; color: var(--text-soft);
+}
+
+button {
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: 8px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    padding: 9px 20px;
+    transition: background 0.15s, color 0.15s, border-color 0.15s, opacity 0.15s;
+}
+.btn-primary {
+    background: var(--accent);
+    color: #121208;
+    box-shadow: 0 0 22px rgba(245, 197, 24, 0.22);
+}
+.btn-primary:hover:not(:disabled) { background: #ffd634; }
+.btn-ghost {
+    background: transparent; color: var(--text-soft);
+    border-color: var(--border-bright);
+}
+.btn-ghost:hover:not(:disabled) { color: var(--text); border-color: var(--text-faint); }
+.btn-danger { background: transparent; color: var(--fail); border-color: rgba(255, 95, 86, 0.35); }
+.btn-danger:hover:not(:disabled) { background: rgba(255, 95, 86, 0.1); }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.examples { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.example {
+    font-size: 12px; color: var(--text-soft);
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border);
+    border-radius: 20px; padding: 6px 14px; cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+}
+.example:hover { color: var(--accent); border-color: var(--accent-dim); }
+
+/* ----------------------------------------------------------- panels */
+.panel {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-top: 22px;
+    overflow: hidden;
+    animation: rise 0.3s ease both;
+}
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+
+.panel-head {
+    padding: 15px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+}
+.panel-head h3 {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.13em;
+    text-transform: uppercase; color: var(--accent);
+}
+.panel-body { padding: 18px 20px; }
+
+.reasoning {
+    font-size: 13.5px; color: var(--text-soft); line-height: 1.7;
+    border-left: 2px solid var(--accent-dim);
+    padding-left: 14px; margin-bottom: 20px;
+}
+
+/* ------------------------------------------------------------- steps */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th {
+    text-align: left; font-size: 10px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--text-faint);
+    font-weight: 600; padding: 0 10px 10px; border-bottom: 1px solid var(--border);
+}
+td { padding: 13px 10px; border-bottom: 1px solid rgba(30, 30, 40, 0.6); vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+td.num { color: var(--text-faint); width: 28px; font-variant-numeric: tabular-nums; }
+
+.risk {
+    display: inline-block; font-size: 10px; font-weight: 600;
+    letter-spacing: 0.07em; text-transform: uppercase;
+    padding: 3px 8px; border-radius: 5px; white-space: nowrap;
+}
+.risk.read { background: rgba(68, 208, 123, 0.12); color: var(--pass); }
+.risk.write { background: rgba(255, 176, 32, 0.12); color: var(--warn); }
+.risk.irreversible { background: rgba(255, 95, 86, 0.14); color: var(--fail); }
+
+.call { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); margin-top: 5px; word-break: break-word; }
+.check { font-size: 11.5px; color: var(--text-faint); margin-top: 4px; font-style: italic; }
+
+[contenteditable] { outline: none; border-radius: 4px; padding: 1px 3px; margin: -1px -3px; }
+[contenteditable]:focus { background: rgba(245, 197, 24, 0.08); box-shadow: 0 0 0 1px var(--accent-dim); }
+
+.actions { display: flex; gap: 10px; padding: 16px 20px; border-top: 1px solid var(--border); }
+
+/* -------------------------------------------------------- live feed */
+.feed { font-size: 13px; }
+.feed-line {
+    display: flex; gap: 11px; padding: 9px 0;
+    border-bottom: 1px solid rgba(30, 30, 40, 0.5);
+    animation: rise 0.22s ease both;
+}
+.feed-line:last-child { border-bottom: none; }
+.feed-mark { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; flex: 0 0 42px; padding-top: 2px; }
+.feed-mark.pass { color: var(--pass); }
+.feed-mark.fail { color: var(--fail); }
+.feed-mark.note { color: var(--text-faint); }
+.feed-body { flex: 1; min-width: 0; }
+.feed-body .detail { font-size: 12px; color: var(--text-faint); margin-top: 3px; line-height: 1.6; }
+
+.spinner {
+    width: 13px; height: 13px; border-radius: 50%;
+    border: 2px solid var(--border-bright); border-top-color: var(--accent);
+    animation: spin 0.7s linear infinite; display: inline-block;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ------------------------------------------------------- conclusion */
+.verdict { padding: 15px 18px; border-radius: 9px; font-size: 13.5px; line-height: 1.65; }
+.verdict.done { background: rgba(68, 208, 123, 0.08); border: 1px solid rgba(68, 208, 123, 0.25); color: #b8f0cf; }
+.verdict.failed { background: rgba(255, 95, 86, 0.07); border: 1px solid rgba(255, 95, 86, 0.22); color: #ffc2bd; }
+.verdict.rejected { background: rgba(255, 176, 32, 0.07); border: 1px solid rgba(255, 176, 32, 0.22); color: #ffe0a8; }
+
+.answer {
+    background: var(--bg-input); border: 1px solid var(--border-bright);
+    border-left: 2px solid var(--accent);
+    border-radius: 9px; padding: 16px 18px; font-size: 14px; line-height: 1.7;
+    white-space: pre-wrap; word-break: break-word;
+}
+
+pre {
+    background: var(--bg-input); border: 1px solid var(--border);
+    border-radius: 8px; padding: 13px 15px;
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
+    color: var(--text-soft); overflow-x: auto; white-space: pre-wrap;
+    word-break: break-word; max-height: 320px;
+}
+
+details { margin-top: 10px; }
+summary { cursor: pointer; font-size: 12px; color: var(--text-faint); padding: 5px 0; user-select: none; }
+summary:hover { color: var(--accent); }
+
+/* The gate for an irreversible step. Visually unlike everything else on
+ * purpose -- this is the one moment the user must not skim past. */
+.gate { border-color: rgba(255, 95, 86, 0.3); }
+.gate .panel-head h3 { color: var(--fail); }
+.gate-args { font-family: var(--mono); font-size: 12px; line-height: 1.9; }
+.gate-args .k { color: var(--accent); }
+.gate-args .v { color: var(--text); word-break: break-word; }
+
+.empty { color: var(--text-faint); font-size: 13px; text-align: center; padding: 26px; }
+
+@media (max-width: 720px) {
+    main { padding: 84px 18px 90px; }
+    #sidebar-toggle.shifted { left: 18px; }
+}

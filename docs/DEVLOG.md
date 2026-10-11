@@ -624,3 +624,235 @@ paid for itself here.
 planner prompt, and reflection that turns failures into lessons. The
 `torch` install problem resurfaces here; the fallback is SQLite plus
 numpy cosine similarity behind the same interface.
+
+---
+
+## Phase 4 -- Memory
+
+**Date:** 2026-10-11
+**Goal:** The agent remembers finished runs and plans better next time.
+**Status:** Working, with a measured before/after.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `memory/store.py` | SQLite: episodes, lessons, facts. |
+| `memory/semantic.py` | Embeddings and similarity, behind one interface. |
+| `core/reflector.py` | Turns a finished run into memories. |
+| `core/planner.py` | `recall()` -- puts memory into the prompt. |
+| `core/graph.py` | A `reflect` node after `finalise`. |
+| `app.py` | Memory panel: every lesson visible and deletable. |
+
+### Design decisions
+
+| Decision | Choice | Reasoning |
+|---|---|---|
+| What memory is | Retrieval, not training | Look up similar past runs, inject their lessons. Anticlimactic, and what production agents actually do. |
+| Retrieval cutoff | A similarity threshold, not just top-k | Without it the three *least unrelated* episodes always come back, so a new kind of task arrives with three misleading examples -- and the planner tries to follow them. "Book a flight to Tokyo" correctly returns nothing. |
+| Embedder | Pluggable; real model if installed, hashed bag-of-words otherwise | Nothing above `semantic.py` knows which is running. The fallback never fails to install and keeps the suite offline. Measured difference on paraphrases: 0.22 vs 0.71. |
+| Duplicate lessons | Refused by a UNIQUE constraint | Running the same failing task three times would otherwise put three copies of the same advice in front of the planner. |
+| Stale lessons | Superseded, not deleted | The old row is kept pointing at its replacement. "What did it used to believe, and when did that change?" is worth being able to answer. |
+| Facts vs lessons | Facts overwrite; lessons supersede | A vendor's address changing is not an interesting history. A belief about how to work changing is. |
+| Reflection failing | Never fails the run | The work is already done and verified. Memory is an enhancement. |
+| Memory review | A UI panel with delete buttons | See problem 32. |
+
+### Problems encountered
+
+28. **Repairs were invisible to reflection.** `repair_node` dropped the
+    failed result so the final results list reflected what actually
+    happened -- which also deleted the most instructive event in the run.
+    Reflection saw only an attempts counter and produced platitudes:
+    *"verify the file exists first"*, which is already in the planner's
+    instructions. **Fix:** keep a repair log (what was tried, why it
+    failed, what replaced it) and pass it to the reflector. Lessons
+    immediately changed to *"Convert all extracted dates to ISO format
+    before calling add_invoice"* -- a real constraint of this system.
+
+29. **Memory reached the wrong component.** It was injected only into the
+    planner prompt. But *"convert dates to ISO"* is not advice about
+    which steps to run -- it is advice about what to put in an argument,
+    and that decision is made by the resolver. The planner read the
+    lesson, wrote a correct plan, and the resolver produced `02/10/2026`
+    anyway. **Fix:** the resolver sees lessons too.
+    **Lesson:** memory has to reach the component that makes the
+    decision, not the one that looks like it should know.
+
+30. **The goal judge saw planned arguments, not resolved ones.** It was
+    shown `{{step_2.output}}` placeholders and concluded that raw text
+    had been dumped into every field, failing a correct run. **Fix:**
+    `StepResult` now carries the arguments the tool was really called
+    with. **This was the fifth instance of one pattern** -- see the note
+    below.
+
+31. **Installing a better embedder stranded the old memories.** Vectors
+    from different models are not comparable: different dimensions,
+    different geometry. Mixing them means retrieval silently returns
+    nothing while appearing to work. **Fix:** store which embedder made
+    each vector, filter by the current one, and `reembed_all()` to
+    migrate. Then a second bug underneath it -- `CREATE TABLE IF NOT
+    EXISTS` does nothing to a table that already exists, so the new
+    column never reached the existing database. It worked on a fresh
+    machine and failed on this one. **Fix:** an explicit migration list
+    applied on connect.
+
+32. **Memory amplifies the system's own bugs.** The first reflection
+    produced *"Ensure the final step performs the actual filing action"*
+    -- learned from a run that a then-buggy goal verifier had wrongly
+    failed. It also recorded *"Wayne Enterprises: invoice_location =
+    invoices/"* for a vendor whose invoice does not exist.
+
+    The bugs were fixed; the lessons would have outlived them, injected
+    into every future plan as though they were facts about the world. A
+    bad memory does not throw an error.
+
+    **Fix:** the Memory panel shows every lesson with a delete button and
+    marks the ones learned from failed runs. Everywhere else this project
+    refuses to take the model's word for anything; memory is the one
+    place where a wrong belief is invisible, so it gets the same
+    treatment.
+
+### The pattern that has now appeared five times
+
+Problem 9 (the step judge could not see the earlier output), 16 (the
+probe did not know which file the step touched), 24 (the goal judge did
+not know which tools ran), 30 (the goal judge saw placeholders), and the
+original confabulation in Phase 1.
+
+Every time: **a model asked to judge, without being shown what actually
+happened, invented a confident answer rather than saying it could not
+tell.** Every time the instinct was to reword the prompt, and every time
+the fix was the inputs.
+
+### Measured
+
+The Umbrella invoice needed a repair before memory and none after: the
+ISO-date lesson reached the resolver and the date was right first try.
+That is the whole claim of this phase, demonstrated on one task.
+
+---
+
+## Phase 5 -- Capability breadth
+
+**Date:** 2026-10-11 to 2026-10-12
+**Goal:** Stop being a file-and-invoice tool. An agent that only touches
+`sandbox/` is the spine of an AI employee, not one.
+**Status:** 24 tools. Office, email, browser and full database editing.
+
+### What was added
+
+| Area | Tools |
+|---|---|
+| Files | multi-workspace: `sandbox`, `outputs`, plus any folder named in `.env` |
+| Office | `excel_read` `excel_update` `word_read` `word_write` -- via COM |
+| Email | `search_inbox` `save_draft` `send_email` `find_sent` -- SMTP/IMAP |
+| Browser | `browser_open` `browser_read` `browser_type` `browser_click` `browser_click_confirmed` `gmail_compose` |
+| Database | `update_invoice` `delete_invoice` added to the existing three |
+| Verification | `tools/source_check.py` |
+
+### Design decisions
+
+| Decision | Choice | Reasoning |
+|---|---|---|
+| Office automation | COM, not a headless library | The usual trade-off is visible-but-unreliable (clicking pixels) or reliable-but-invisible (writing the file). COM is both: Excel genuinely opens and the user watches, while every instruction is an API call. The demo requirement was to *see* the work happen. |
+| Preference order | API > COM > accessibility tree > pixels | Reliability falls roughly 99% / 99% / 85% / 65% per step. The fallbacks exist so the agent is not helpless with an unanticipated app; they are not the first choice. |
+| Email transport | SMTP/IMAP as well as the browser | A send can be *verified* by reading the Sent folder. A browser click leaves nothing to check but a screenshot. |
+| Browser profile | A dedicated one, not the user's Chrome | Chrome locks its own profile, and pointing an agent at the browser holding every live session is a far larger blast radius than this needs. The user signs in once by hand; the agent inherits the session and never handles the password. |
+| Generic click risk | The tool inspects its target | See problem 34. |
+| New files | An `outputs/` workspace | Generated documents were landing beside the fixtures they came from, so after a few runs there was no telling the agent's work from its inputs. Editing an existing file still edits in place -- "everything to outputs" would silently copy and leave the original stale. |
+| `invoice_number` | Not editable | It is the record's identity and what the UNIQUE constraint protects. "Changing" it is filing a different invoice. |
+| Edits revalidate | Same rules as filing | Otherwise the edit path is a back door: refuse an ambiguous date on insert, accept it through `update_invoice`. |
+
+### Problems encountered
+
+33. **Two tool signatures that were wrong for a model to fill.**
+    `excel_update` first took `changes_json`, which asked the model to
+    produce JSON nested inside a JSON argument -- double-encoded, and
+    wrong often enough to fail the task. Replaced with
+    `"E2=approved; E3=rejected"`. The same shape as the earlier
+    `arguments_json` bug.
+    **Lesson:** a tool's signature is part of its prompt. An argument
+    that is awkward to produce is a design flaw in the tool, and the fix
+    belongs in the signature rather than in more instructions.
+
+34. **A generic click breaks the risk model.** Every other tool has a
+    fixed tier, which is what makes the approval gate meaningful.
+    `browser_click` can click "Scroll down" or "Delete all mail" -- one
+    function spanning every tier, which the gate cannot classify.
+    **Fix:** the tool inspects its target, refuses anything matching
+    send/delete/pay/submit/..., and directs it to
+    `browser_click_confirmed`, which is IRREVERSIBLE. Substring matching,
+    because the two errors are not symmetric: a false positive costs one
+    approval, a false negative means something irreversible happens
+    unasked.
+
+35. **A browser left running locked its own profile.** A process exiting
+    while its Chromium was still alive left the persistent profile
+    locked, and the next run died with an `EPIPE` from inside the
+    Playwright driver -- an error that says nothing about the cause.
+    **Fix:** an `atexit` handler. Also noted: a careless
+    `taskkill /IM chrome.exe` would have killed the user's own browser;
+    processes must be identified by executable path, not by name.
+
+36. **The resolver was told never to summarise.** Its prompt said *"copy
+    values verbatim; do not summarise, reformat or improve them"* --
+    correct for an invoice number, and the reason a request for a
+    one-paragraph summary produced a Word document containing a raw
+    spreadsheet dump, and an email body containing the whole of
+    notes.txt. **Fix:** the prompt now names two jobs and gives a test
+    for telling them apart -- read/find/get/extract means copy;
+    write/summarise/draft/compose means compose. Verified both
+    directions, including no regression on invoice extraction.
+
+37. **The wrong-date bug, finally fixed.** An invoice dated 10/07/2026
+    "(US format)" was filed as 2026-07-10 -- July instead of October --
+    and every check passed, because each asked whether a record existed
+    rather than whether it was right.
+
+    Three prompt rules were tried: postconditions must be checkable,
+    must name the entity, must compare values. Each improved the wording
+    of the postcondition. None made the judge compare, because a model
+    asked "does this match?" about work it just did agrees with itself.
+
+    **Fix:** `tools/source_check.py` -- deterministic corroboration in
+    Python. It refuses a vendor, number or amount that does not appear in
+    the document, and a date the document does not state. Ambiguous dates
+    are refused rather than guessed, and the error names both readings
+    and says what evidence to look for. Explicit format notes outrank
+    geography, because the invoice says "(US format)" *and* is addressed
+    in Manchester, and weighing those equally cancels them out.
+
+    **Verified end to end:** the agent made the same wrong reading, the
+    tool refused with an explanation, and the repair ladder filed
+    2026-10-07 unaided.
+
+    **Lesson, now proven three times** (ISO dates, click safety, this):
+    a prompt is a request, a tool is a gate. And the second half, which
+    took longer to see: *a refusal is only useful if its message explains
+    the fix.* "Invalid date" would have left the agent stuck.
+
+### Verified live
+
+- Excel opened on screen, compared actuals against targets and wrote
+  three verdicts correctly -- with nothing in the code knowing what
+  "beat its target" means.
+- A spreadsheet read in Excel became a prose summary in Word.
+- A real email composed in Gmail through the browser and sent after
+  review.
+- A ledger row edited; a delete fired gate 2, abort left the row intact,
+  approve removed it.
+- Four traversal attempts still refused, now across multiple workspaces.
+
+### Known gaps
+
+- **No LLM response cache.** Development still burns the daily quota and
+  failures do not reproduce, which has repeatedly made debugging harder
+  than it needed to be.
+- **No stop button mid-step.** Execution runs inside the Streamlit
+  request; a real cancel needs the graph on a background thread.
+- **Desktop control (pywinauto) is not built.** COM covers Office, but
+  an application with neither an API nor COM cannot be driven at all.
+- **Office documents stay open** after the agent uses them, which locks
+  the files against other tools until something closes them.
+- **No tests for the Office, browser or mail tools** -- they need the
+  applications present, so they are outside the offline suite.

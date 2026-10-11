@@ -184,5 +184,18 @@ def write_file(path: str, content: str) -> str:
         raise FileAccessError(f"{path!r} is a directory, not a file.")
 
     resolved.parent.mkdir(parents=True, exist_ok=True)
-    resolved.write_text(content, encoding="utf-8")
+    try:
+        resolved.write_text(content, encoding="utf-8")
+    except PermissionError as exc:
+        # Windows locks a file while Excel or Word has it open. The bare
+        # PermissionError says nothing the agent can act on; naming the
+        # cause and the alternative lets the repair ladder switch to
+        # excel_update, which drives the open application instead of
+        # fighting it for the file.
+        raise FileAccessError(
+            f"{path!r} is locked -- it is open in another program, "
+            "probably Excel or Word. Either use excel_update, which edits "
+            "the open file through Excel itself, or write to a different "
+            f"path under outputs/. ({exc.strerror})"
+        ) from exc
     return f"Wrote {len(content)} characters to {_display(resolved)}"
