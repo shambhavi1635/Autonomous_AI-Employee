@@ -80,6 +80,27 @@ class BrowserError(RuntimeError):
     """The browser could not be driven."""
 
 
+def _clear_stale_lock() -> None:
+    """Remove lock files left by a browser that did not shut down.
+
+    Chromium marks a profile as in use with SingletonLock and friends,
+    and removes them when it exits cleanly. A browser that was killed --
+    by a crash, or by someone clearing a wedged run -- leaves them
+    behind, and every later launch is refused for a profile nothing is
+    actually using.
+
+    Only safe because the profile belongs solely to this agent: if a
+    real Chromium still held it, the kernel would keep the files locked
+    and the unlink would fail, which is why failures here are ignored
+    rather than reported.
+    """
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        try:
+            (PROFILE_DIR / name).unlink(missing_ok=True)
+        except OSError:
+            pass  # genuinely held by a running browser
+
+
 def _worker_loop() -> None:
     """Owns the browser. Starts it, then serves commands until told to stop."""
     global _playwright, _context, _startup_error
@@ -153,6 +174,7 @@ def _launch():
         ) from exc
 
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    _clear_stale_lock()
 
     try:
         _playwright = sync_playwright().start()
@@ -192,15 +214,30 @@ def _page():
     if not _context.pages:
         return _context.new_page()
 
+    _tidy_tabs()
     real = [p for p in _context.pages if p.url not in ("about:blank", "")]
-    for spare in _context.pages:
-        if spare.url in ("about:blank", "") and real:
+    return real[0] if real else _context.pages[0]
+
+
+def _tidy_tabs() -> None:
+    """Close blank tabs, as long as a real page is open.
+
+    Called after navigating as well as before, because Gmail's compose
+    URL opens a second tab while it loads -- and compose is the last
+    browser step of an email plan, so nothing else would ever clear it.
+    """
+    if _context is None:
+        return
+    pages = list(_context.pages)
+    real = [p for p in pages if p.url not in ("about:blank", "")]
+    if not real:
+        return
+    for spare in pages:
+        if spare.url in ("about:blank", ""):
             try:
                 spare.close()
             except Exception:
                 pass
-
-    return real[0] if real else _context.pages[0]
 
 
 def _is_consequential(target: str) -> str | None:
@@ -395,6 +432,7 @@ def gmail_compose(to: str, subject: str, body: str) -> str:
         page.goto(f"https://mail.google.com/mail/?{query}",
                   wait_until="domcontentloaded", timeout=45000)
         page.wait_for_timeout(2500)
+        _tidy_tabs()
         return page.url
 
     url = _call(job)
@@ -446,3 +484,16 @@ def browser_close() -> str:
         return "The browser was not open."
     close_browser()
     return "Closed the browser window. Signed-in sessions are kept for next time."
+
+
+def is_open() -> bool:
+    """Whether the agent's browser is currently running."""
+    return _worker is not None and _worker.is_alive()
+
+
+def close_browser_tool_safe() -> str:
+    """Close the browser, for callers that are not the agent."""
+    if not is_open():
+        return "The browser was not open."
+    close_browser()
+    return "Closed the browser window."

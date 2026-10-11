@@ -162,6 +162,23 @@ async def forget_lesson(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+async def browser_state(request: Request) -> JSONResponse:
+    """Whether the agent's browser is open, and close it on request.
+
+    A button rather than a task. The agent cannot tell when a person has
+    finished with a composed email -- it has no way to watch for a Send
+    click without blocking the run -- so closing the window is the one
+    part of the email flow that belongs to the user, and it should not
+    cost a whole planning round to ask for.
+    """
+    from tools import browser
+
+    if request.method == "DELETE":
+        return JSONResponse({"message": browser.close_browser_tool_safe()})
+
+    return JSONResponse({"open": browser.is_open()})
+
+
 async def start(request: Request) -> JSONResponse:
     body = await request.json()
     task = (body.get("task") or "").strip()
@@ -260,6 +277,7 @@ app = Starlette(
         Route("/api/ledger", ledger),
         Route("/api/memory", memory),
         Route("/api/memory/{lesson_id:int}", forget_lesson, methods=["DELETE"]),
+        Route("/api/browser", browser_state, methods=["GET", "DELETE"]),
         Mount("/static", StaticFiles(directory=WEB_DIR), name="static"),
     ]
 )

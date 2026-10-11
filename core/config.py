@@ -28,13 +28,29 @@ load_dotenv(PROJECT_ROOT / ".env")
 SANDBOX_DIR = PROJECT_ROOT / "sandbox"
 
 
+def _desktop() -> Path:
+    """The user's Desktop, following a OneDrive redirect if there is one.
+
+    Windows moves the Desktop under OneDrive when folder backup is on,
+    and the literal ~/Desktop then does not exist. Checking both is the
+    difference between the output folder appearing where the user can
+    see it and appearing somewhere they never look.
+    """
+    home = Path.home()
+    for candidate in (home / "OneDrive" / "Desktop", home / "Desktop"):
+        if candidate.is_dir():
+            return candidate
+    return home
+
+
 # Everything the agent produces goes here, separate from the material it
-# was given. Mixed together, there is no way to tell at a glance what the
-# agent did from what was already on disk -- which matters for trusting
-# it, and for clearing up after a demo without deleting the fixtures.
-# Override with OUTPUTS_DIR in .env to put it on the Desktop or a share.
+# was given and separate from the project. On the Desktop by default so
+# it is somewhere the user actually looks -- a folder buried in a source
+# tree is not a place anyone checks for their own documents, and it also
+# meant the project directory filled up with generated files.
+# Override with OUTPUTS_DIR in .env.
 OUTPUTS_DIR = Path(
-    os.getenv("OUTPUTS_DIR", "").strip() or PROJECT_ROOT / "AI_Colleague Outputs"
+    os.getenv("OUTPUTS_DIR", "").strip() or _desktop() / "AI_colleage_outputs"
 ).expanduser()
 
 

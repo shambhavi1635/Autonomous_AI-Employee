@@ -85,10 +85,30 @@ async function renderFooter() {
     try {
         const memory = await api("/api/memory");
         const ledger = await api("/api/ledger");
+        const browser = await api("/api/browser");
+
+        // The browser button only appears when there is something to
+        // close. The agent cannot tell when a person has finished with
+        // a composed email, so this is the one part of that flow that
+        // stays with the user -- and it should not cost a planning
+        // round to ask for.
         $("#sidebar-foot").innerHTML =
             `<div>memory &middot; <code>${memory.stats.lessons}</code> lessons,
              <code>${memory.stats.episodes}</code> runs</div>
-             <div>ledger &middot; <code>${ledger.invoices.length}</code> invoices</div>`;
+             <div>ledger &middot; <code>${ledger.invoices.length}</code> invoices</div>
+             ${browser.open ? `<button class="btn-ghost" id="close-browser"
+                style="margin-top:10px;width:100%;padding:7px;font-size:12px;">
+                Close agent browser</button>` : ""}`;
+
+        const button = $("#close-browser");
+        if (button) {
+            button.onclick = async () => {
+                button.disabled = true;
+                button.textContent = "Closing...";
+                await fetch("/api/browser", { method: "DELETE" });
+                renderFooter();
+            };
+        }
     } catch {
         /* the footer is decoration; never let it break the page */
     }
