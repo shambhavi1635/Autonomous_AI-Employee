@@ -88,7 +88,20 @@ def _app(prog_id: str):
 
 
 def _open_workbook(app, path: Path):
-    """Return the workbook for `path`, reusing it if already open."""
+    """Return the workbook for `path`, reusing it if already open.
+
+    The awkward case is a second Excel process. COM attaches to one
+    instance, and if the file is open in a different one, Excel will not
+    open it again -- Workbooks.Open returns None rather than raising,
+    and the next attribute access fails with a bare AttributeError that
+    says nothing about the cause.
+
+    Worse, that left two tools pointing at each other: excel_update
+    failed on the None, repair switched to write_file, which failed
+    because the file was locked and suggested excel_update. The error
+    has to offer a way out that does not involve either of them, so it
+    names writing to outputs/ instead.
+    """
     target = str(path)
     for book in app.Workbooks:
         try:
@@ -96,8 +109,18 @@ def _open_workbook(app, path: Path):
                 return book
         except Exception:
             continue
+
     if path.exists():
-        return app.Workbooks.Open(target)
+        book = app.Workbooks.Open(target)
+        if book is None:
+            raise OfficeError(
+                f"{path.name} is open in a different Excel window, which "
+                "prevents this one from opening it. Either close that "
+                "window and try again, or write the result to a new file "
+                f"under outputs/ instead of changing {path.name} in place."
+            )
+        return book
+
     book = app.Workbooks.Add()
     book.SaveAs(target)
     return book

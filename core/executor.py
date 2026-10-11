@@ -60,9 +60,26 @@ summarise a spreadsheet and handed back the raw rows has not done its
 job. Write it as a person would -- prose, appropriate length, no
 column dumps or markup.
 
+**Transforming data.** "the same table with a status column added",
+"these rows sorted by date", "the CSV with the pending ones marked
+approved". Produce the *whole* result, with your change applied --
+every row, same format, same delimiter, header included. Returning the
+input unchanged is the failure mode here, and it is easy to fall into
+because so much of the content is genuinely meant to be copied.
+
+    task:   "write a copy with a promotion status column, approved for
+             anyone with 8 or more years"
+    wrong:  the original CSV, unchanged
+    right:  the original CSV plus a "promotion status" column, filled
+            in row by row
+
+Work the rule out for each row rather than guessing: the point of the
+step is the change, not the copy.
+
 When unsure which job it is, look at the verb in the intent: read,
-find, get and extract mean copy; write, summarise, draft, compose,
-explain and report mean compose.
+find, get and extract mean copy; write, summarise, draft, compose and
+explain mean compose; add, update, mark, change, sort, filter and
+convert mean transform.
 """
 
 _PROBE_PROMPT = """\
@@ -150,6 +167,13 @@ got what they asked for.
 What the user asked for:
     {task}
 
+Where the agent's workspaces point:
+{workspaces}
+
+A path like "outputs/report.csv" refers to the folder above, so saving
+there is the same thing as saving to that folder -- not a different
+place. Do not fail a run for using the short name.
+
 What was done -- the tool each step actually ran, and what was observed
 afterwards when checking it:
 {trace}
@@ -235,7 +259,9 @@ def verify_goal(
 
     try:
         return client.generate_structured(
-            _GOAL_PROMPT.format(task=task, trace=trace),
+            _GOAL_PROMPT.format(
+                task=task, trace=trace, workspaces=_describe_workspaces()
+            ),
             GoalVerdict,
             model=config.FAST_MODEL,
         )
@@ -579,6 +605,24 @@ def _lessons_block() -> str:
         + "\n".join(f"- {row['text']}" for row in lessons)
         + "\n"
     )
+
+
+def _describe_workspaces() -> str:
+    """What the agent's short path names actually mean on disk.
+
+    The goal judge sees a request to save "to the Desktop folder" and a
+    trace saying the file went to "outputs/promotions.csv", and without
+    this it reads them as two different places and fails a run that did
+    exactly what was asked. The agent uses short names deliberately --
+    machine paths in a plan are unreadable -- so whatever judges the
+    plan has to be told what they resolve to.
+    """
+    try:
+        from core.config import WORKSPACES
+
+        return "\n".join(f"  {name}/ = {path}" for name, path in WORKSPACES.items())
+    except Exception:
+        return "  (unknown)"
 
 
 def _format_outputs(outputs: dict[int, Any]) -> str:
