@@ -27,6 +27,12 @@ load_dotenv(PROJECT_ROOT / ".env")
 # Widening this is a deliberate decision, made here, not in a tool.
 SANDBOX_DIR = PROJECT_ROOT / "sandbox"
 
+# Generated at runtime, gitignored. The checkpoint database is what makes
+# the approval gates durable: the graph writes its whole state here when it
+# pauses, so a run can be resumed minutes later or after a restart.
+DATA_DIR = PROJECT_ROOT / "data"
+CHECKPOINT_DB = DATA_DIR / "checkpoints.sqlite"
+
 # ---------------------------------------------------------------- secrets
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
 
@@ -41,6 +47,17 @@ FAST_MODEL = os.getenv("FAST_MODEL", "gemini-flash-latest").strip()
 
 # ----------------------------------------------------------------- limits
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
+
+# A hard ceiling on how many steps one run may execute. Guards against the
+# classic agent failure: looping forever while spending money.
+MAX_STEPS = int(os.getenv("MAX_STEPS", "25"))
+
+
+def ensure_dirs() -> None:
+    """Create runtime directories. data/ is gitignored, so on a fresh
+    clone it does not exist and the checkpointer would fail to open."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def require_api_key() -> str:
