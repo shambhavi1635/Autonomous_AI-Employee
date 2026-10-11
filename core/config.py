@@ -21,6 +21,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 load_dotenv(PROJECT_ROOT / ".env")
 
+# The only directory the agent's file tools may touch. Everything the agent
+# reads or writes lives under here, so a wrong path, a confused plan or a
+# malicious instruction inside a document cannot reach the rest of the disk.
+# Widening this is a deliberate decision, made here, not in a tool.
+SANDBOX_DIR = PROJECT_ROOT / "sandbox"
+
 # ---------------------------------------------------------------- secrets
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
 
