@@ -263,8 +263,45 @@ def render_outcome(values: dict[str, Any]) -> None:
             hide_index=True,
         )
 
+    render_outputs(values)
+
     if values.get("replans"):
         st.caption(f"The plan was reconsidered {values['replans']} time(s).")
+
+
+def render_outputs(values: dict[str, Any]) -> None:
+    """Show what each step actually returned.
+
+    Not the same as the evidence column. Evidence is what a read-only
+    probe observed when checking a step; this is the step's own result.
+
+    For a task phrased as a question -- "list every invoice", "what was
+    the total?" -- the output IS the answer, and without this the UI
+    reports success while showing the user nothing they asked for. There
+    is no "reply to the user" tool, so the last step's output is the
+    closest thing the agent has to an answer.
+    """
+    outputs = values.get("outputs") or {}
+    if not outputs:
+        return
+
+    st.subheader("What the steps returned")
+    ordered = sorted(outputs.items(), key=lambda kv: int(kv[0]))
+
+    for step_id, output in ordered:
+        last = step_id == ordered[-1][0]
+        with st.expander(f"Step {step_id}", expanded=last):
+            if isinstance(output, (list, dict)):
+                # A list of records renders far better as a table than as
+                # JSON, and "list every invoice" returns exactly that.
+                if isinstance(output, list) and output and isinstance(output[0], dict):
+                    st.dataframe(pd.DataFrame(output), use_container_width=True,
+                                 hide_index=True)
+                else:
+                    st.json(output)
+            else:
+                text = str(output)
+                st.code(text if len(text) <= 4000 else text[:4000] + "\n...")
 
 
 def render_ledger() -> None:
