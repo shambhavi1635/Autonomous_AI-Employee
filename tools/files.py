@@ -96,10 +96,14 @@ def list_files(pattern: str = "**/*") -> list[str]:
 
 @tool(risk=Risk.READ)
 def read_file(path: str) -> str:
-    """Return the full text contents of a file in the sandbox.
+    """Read a plain text file (.txt, .csv, .md, .json) -- NOT a PDF, use read_pdf for those.
 
-    Use this to inspect a file before acting on it. The path is relative
-    to the sandbox, for example 'notes.txt' or 'invoices/acme.txt'.
+    The path is relative to the sandbox, for example 'notes.txt' or
+    'invoices/summary.csv'. PDFs are binary and will be refused.
+
+    Note the first line: the registry puts only a docstring's opening
+    paragraph in the catalog, so anything the planner must know when
+    *choosing* this tool belongs there, not further down.
     """
     resolved = _resolve(path, must_exist=True)
 

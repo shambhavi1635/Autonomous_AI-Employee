@@ -58,6 +58,12 @@ LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 # classic agent failure: looping forever while spending money.
 MAX_STEPS = int(os.getenv("MAX_STEPS", "25"))
 
+# How many times one step may be attempted, including the first try. 2 means
+# one repair. Tools report *why* they failed ("not UTF-8 text, use read_pdf"),
+# so the first repair fixes most things; a step still failing after being
+# shown its own error usually needs a different plan, not another go.
+MAX_STEP_ATTEMPTS = int(os.getenv("MAX_STEP_ATTEMPTS", "2"))
+
 
 def ensure_dirs() -> None:
     """Create runtime directories. data/ is gitignored, so on a fresh

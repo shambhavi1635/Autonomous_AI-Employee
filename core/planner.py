@@ -89,7 +89,7 @@ def validate_plan(plan: Plan) -> list[str]:
         # "{{step_1.output}}" string does not fail an int field for the
         # wrong reason.
         try:
-            spec.args_model(**_stub_placeholders(arguments))
+            spec.args_model(**_stub_placeholders(arguments, spec.args_model))
         except Exception as exc:  # pydantic ValidationError or TypeError
             first = str(exc).splitlines()
             detail = first[1].strip() if len(first) > 1 else str(exc)
@@ -157,12 +157,29 @@ def _placeholder_steps(value: object) -> list[int]:
     return found
 
 
-def _stub_placeholders(arguments: dict) -> dict:
-    """Replace placeholder strings with a plain value for type checking."""
-    return {
-        name: ("placeholder" if _placeholder_steps(value) else value)
-        for name, value in arguments.items()
-    }
+def _stub_placeholders(arguments: dict, model: type) -> dict:
+    """Replace placeholders with a stand-in of the right type.
+
+    A placeholder is a string standing in for a value that does not exist
+    yet, and it may fill a field of any type -- `total_amount` is a float,
+    but at plan time all the planner can say is {{step_2.output}}.
+
+    Substituting a plain string here would fail that float field and
+    reject a correct plan. Worse, the repair round would then push the
+    model to replace the placeholder with a literal it invents -- a
+    hardcoded 0.0 instead of the real total. That happened, and it is why
+    the stand-in has to match the declared type.
+    """
+    stubs: dict[str, object] = {}
+    for name, value in arguments.items():
+        if not _placeholder_steps(value):
+            stubs[name] = value
+            continue
+        annotation = getattr(model.model_fields.get(name), "annotation", str)
+        stubs[name] = {float: 1.0, int: 1, bool: True, list: [], dict: {}}.get(
+            annotation, "placeholder"
+        )
+    return stubs
 
 
 def render(plan: Plan) -> str:

@@ -47,6 +47,20 @@ placeholder and will be used literally.
 If a step needs part of an earlier output rather than all of it, say so in
 `intent`; the program handles the extraction.
 
+**3b. Never copy a value out of the task when a document is the real source.**
+The task names things loosely — "the Acme invoice", "last month's report".
+Those words identify *which* thing to find; they are not the data. If a
+value is supposed to come from a file you are about to read, it must be a
+placeholder, even when you think you can guess it.
+
+    GOOD: add_invoice(vendor="{{step_2.output}}", total_amount="{{step_2.output}}")
+    BAD:  add_invoice(vendor="Acme", total_amount="{{step_2.output}}")
+
+The second one files "Acme" when the invoice says "ACME CORPORATION", and
+nothing downstream can tell that the value was guessed rather than read.
+Placeholders are allowed in numeric and date fields too — write them as
+strings and the program converts them.
+
 **4. Risk.**
 Label each step with the risk shown next to its tool in the catalog. If a
 step is more dangerous than its tool's label suggests — deleting something

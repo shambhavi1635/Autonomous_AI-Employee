@@ -55,11 +55,18 @@ choosing ONE read-only tool call that would reveal the truth.
 Step intent:   {intent}
 Postcondition: {postcondition}
 
+The call that just ran, with its real arguments:
+    {call}
+
 Read-only tools available:
 {catalog}
 
 Choose the call that most directly observes the postcondition. Prefer
 looking at the thing that was supposed to change.
+
+Use the exact paths, names and identifiers shown in the call above. Never
+invent a filename or guess at one that looks plausible -- a probe that
+reads the wrong thing produces a verdict about the wrong thing.
 """
 
 _JUDGE_PROMPT = """\
@@ -85,6 +92,45 @@ not assert a fact you cannot read directly from the material above -- a
 confident wrong verdict is worse than an honest "cannot tell", because it
 stops a correct step or passes a broken one.
 """
+
+
+_REPAIR_PROMPT = """\
+A step in an approved plan failed. Propose a corrected version of that one
+step. Everything before it succeeded and will not be run again.
+
+What the step was meant to achieve: {intent}
+
+What was tried:
+    {call}
+Its postcondition: {postcondition}
+
+What went wrong:
+    {failure}
+
+Tools available:
+{catalog}
+
+Results of earlier steps:
+{outputs}
+
+Rules:
+- Keep the same intent. You are fixing how, not what.
+- You may change the tool, the arguments, or the postcondition.
+- Read the error literally. If it names the tool you should have used, or
+  the argument that was wrong, that is the fix -- do not look past it for
+  a cleverer explanation.
+- If the postcondition was unobservable rather than unmet, restate it as
+  something a read-only tool can actually check.
+- Placeholders like {{step_N.output}} still work and still refer to
+  earlier steps.
+"""
+
+
+class RepairedStep(BaseModel):
+    tool: str = Field(description="Tool to use this time")
+    arguments_json: str = Field(description="Its arguments, as a JSON object string")
+    postcondition: str = Field(description="How to check it worked this time")
+    why: str = Field(description="One sentence: what was wrong and what changed")
 
 
 class ResolvedArguments(BaseModel):
@@ -204,6 +250,7 @@ def verify(
     step: Step,
     result: StepResult,
     prior_outputs: dict[int, Any] | None = None,
+    arguments: dict[str, Any] | None = None,
     *,
     client: LLMClient,
 ) -> StepResult:
@@ -241,6 +288,7 @@ def verify(
             _PROBE_PROMPT.format(
                 intent=step.intent,
                 postcondition=step.postcondition,
+                call=f"{step.tool}({json.dumps(arguments or step.arguments)})",
                 catalog=catalog,
             ),
             Probe,
@@ -297,7 +345,76 @@ def execute_step(
     """Resolve, run and verify one step. The whole job, in order."""
     arguments = resolve_arguments(step, prior_outputs, client=client)
     result = run_tool(step, arguments)
-    return verify(step, result, prior_outputs, client=client)
+    return verify(step, result, prior_outputs, arguments, client=client)
+
+
+def repair_step(
+    step: Step,
+    result: StepResult,
+    prior_outputs: dict[int, Any],
+    *,
+    client: LLMClient,
+) -> Step | None:
+    """Propose a corrected version of a step that failed.
+
+    This is the rung of the failure ladder above a blind retry. A blind
+    retry only helps with genuinely transient faults; most agent failures
+    are the agent having been wrong about something, and repeating the
+    same call repeats the same mistake.
+
+    What makes repair work is that tools explain themselves. "'x.pdf' is
+    not UTF-8 text -- use read_pdf" contains the fix. Showing the model
+    its own error and letting it choose a different tool or different
+    arguments turns a dead end into a correction.
+
+    Returns None if the model cannot produce a valid replacement, which
+    the caller treats as "escalate to the human".
+    """
+    failure = result.error or result.evidence or "unknown failure"
+    catalog = registry.catalog()
+
+    try:
+        proposal = client.generate_structured(
+            _REPAIR_PROMPT.format(
+                intent=step.intent,
+                call=f"{step.tool}({step.arguments_json})",
+                postcondition=step.postcondition,
+                failure=failure,
+                catalog=catalog,
+                outputs=_format_outputs(prior_outputs),
+            ),
+            RepairedStep,
+            model=config.FAST_MODEL,
+        )
+    except LLMError:
+        return None
+
+    try:
+        spec = registry.get(proposal.tool)
+    except registry.UnknownToolError:
+        return None
+
+    try:
+        repaired = Step(
+            id=step.id,
+            intent=step.intent,
+            tool=proposal.tool,
+            arguments_json=proposal.arguments_json,
+            postcondition=proposal.postcondition,
+            # Risk is re-derived from the tool that will actually run. A
+            # repair may swap in a more dangerous tool, and that must put
+            # the step behind the approval gate even though the original
+            # was waved through.
+            risk=registry.effective_risk(proposal.tool, spec.risk),
+        )
+    except Exception:
+        return None
+
+    # A repair proposing the identical call would just fail identically.
+    if (repaired.tool, repaired.arguments_json) == (step.tool, step.arguments_json):
+        return None
+
+    return repaired
 
 
 def _format_outputs(outputs: dict[int, Any]) -> str:

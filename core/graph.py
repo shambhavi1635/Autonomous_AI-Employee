@@ -45,9 +45,15 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from core import config
-from core.executor import ExecutionError, resolve_arguments, run_tool, verify
+from core.executor import (
+    ExecutionError,
+    repair_step,
+    resolve_arguments,
+    run_tool,
+    verify,
+)
 from core.planner import PlanningError, make_plan, render
-from core.schemas import Plan
+from core.schemas import Plan, StepResult
 from llm.client import LLMClient
 from tools import registry
 
@@ -60,6 +66,7 @@ class AgentState(TypedDict, total=False):
     cursor: int                      # index into plan["steps"] of the next step
     outputs: dict[str, Any]          # step id (as str) -> that step's output
     results: list[dict[str, Any]]    # StepResult dicts, in order
+    attempts: dict[str, int]         # step id (as str) -> tries so far
     status: Literal[
         "planning", "awaiting_approval", "running", "done", "failed", "rejected"
     ]
@@ -78,6 +85,7 @@ def plan_node(state: AgentState) -> AgentState:
         "cursor": 0,
         "outputs": {},
         "results": [],
+        "attempts": {},
         "status": "awaiting_approval",
         "message": "",
     }
@@ -178,7 +186,7 @@ def step_node(state: AgentState) -> AgentState:
 
     client = LLMClient()
     result = run_tool(step, arguments)
-    result = verify(step, result, outputs, client=client)
+    result = verify(step, result, outputs, arguments, client=client)
 
     new_outputs = dict(state.get("outputs", {}))
     new_outputs[str(step.id)] = result.output
@@ -187,6 +195,47 @@ def step_node(state: AgentState) -> AgentState:
         "cursor": cursor + 1,
         "outputs": new_outputs,
         "results": state["results"] + [result.model_dump(mode="json")],
+    }
+
+
+def repair_node(state: AgentState) -> AgentState:
+    """Ask the model to fix the step that just failed, then try again.
+
+    The repaired step replaces the failed one in the plan, so what the
+    human sees afterwards is what actually ran -- not the version that
+    was approved. `message` records the substitution, because a plan that
+    silently rewrote itself would undermine the point of approving one.
+    """
+    plan = Plan.model_validate(state["plan"])
+    cursor = state["cursor"] - 1          # the step that just failed
+    step = plan.steps[cursor]
+
+    failed = StepResult.model_validate(state["results"][-1])
+    outputs = {int(k): v for k, v in state.get("outputs", {}).items()}
+
+    repaired = repair_step(step, failed, outputs, client=LLMClient())
+    if repaired is None:
+        return {
+            "status": "failed",
+            "message": (
+                f"Step {step.id} failed and could not be repaired: "
+                f"{failed.error or failed.evidence}"
+            ),
+        }
+
+    plan.steps[cursor] = repaired
+    attempts = dict(state.get("attempts", {}))
+    attempts[str(step.id)] = attempts.get(str(step.id), 1) + 1
+
+    return {
+        "plan": plan.model_dump(mode="json"),
+        "cursor": cursor,                 # rewind to re-run this step
+        "results": state["results"][:-1],  # drop the failed attempt
+        "attempts": attempts,
+        "message": (
+            f"Step {step.id} failed ({failed.error or failed.evidence}); "
+            f"retrying as {repaired.tool}."
+        ),
     }
 
 
@@ -209,12 +258,18 @@ def after_step(state: AgentState) -> str:
     plan = Plan.model_validate(state["plan"])
     results = state.get("results", [])
 
+    # The failure ladder. A step that did not succeed gets one repair
+    # attempt before the run stops; a step that has already been repaired
+    # and failed again is escalated to the human rather than retried in a
+    # loop, because the second failure is evidence the approach is wrong,
+    # not that the attempt was unlucky.
     if results:
         last = results[-1]
-        if last.get("ok") and last.get("verified") is False:
-            return END
-        if last.get("ok") is False and "skipped" not in (last.get("error") or ""):
-            return END
+        skipped = "skipped" in (last.get("error") or "")
+        succeeded = last.get("ok") and last.get("verified")
+        if not succeeded and not skipped:
+            attempts = state.get("attempts", {}).get(str(last["step_id"]), 1)
+            return "repair" if attempts < config.MAX_STEP_ATTEMPTS else END
 
     if state["cursor"] >= len(plan.steps):
         return END
@@ -255,6 +310,7 @@ def build_graph(checkpointer: SqliteSaver):
     builder.add_node("plan", plan_node)
     builder.add_node("approve", approval_node)
     builder.add_node("step", step_node)
+    builder.add_node("repair", repair_node)
     builder.add_node("finalise", finalise)
 
     builder.add_edge(START, "plan")
@@ -263,7 +319,12 @@ def build_graph(checkpointer: SqliteSaver):
         "approve", after_approval, {"step": "step", END: "finalise"}
     )
     builder.add_conditional_edges(
-        "step", after_step, {"step": "step", END: "finalise"}
+        "step", after_step, {"step": "step", "repair": "repair", END: "finalise"}
+    )
+    # Repair rewinds the cursor and sends the step back round.
+    builder.add_conditional_edges(
+        "repair", lambda s: END if s.get("status") == "failed" else "step",
+        {"step": "step", END: "finalise"},
     )
     builder.add_edge("finalise", END)
 

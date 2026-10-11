@@ -22,6 +22,7 @@ checkable because the agent can look the record back up.
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from typing import Any
 
 from core.config import LEDGER_DB, ensure_dirs
@@ -45,6 +46,19 @@ class LedgerError(RuntimeError):
     """A ledger operation was refused or failed."""
 
 
+def _require_iso_date(value: str) -> None:
+    """Reject anything that is not an unambiguous YYYY-MM-DD date."""
+    try:
+        datetime.strptime(value.strip(), "%Y-%m-%d")
+    except ValueError:
+        raise LedgerError(
+            f"invoice_date must be ISO format YYYY-MM-DD, got {value!r}. "
+            "Convert it first: '02/10/2026' is ambiguous, but if the "
+            "document is Indian or European it means 2026-10-02, and if "
+            "American it means 2026-02-10. Decide from the document."
+        ) from None
+
+
 def _connect() -> sqlite3.Connection:
     """Open the ledger, creating it on first use."""
     ensure_dirs()
@@ -62,16 +76,26 @@ def add_invoice(
     total_amount: float,
     currency: str = "USD",
 ) -> str:
-    """File an invoice in the ledger. Invoice numbers must be unique.
+    """File an invoice. invoice_date MUST be ISO YYYY-MM-DD; invoice numbers must be unique.
 
-    Use this once the invoice details have been extracted and checked.
-    invoice_date should be ISO format, YYYY-MM-DD. Refuses duplicates, so
-    re-running a task cannot file the same invoice twice.
+    Use this once the invoice details have been extracted. Documents write
+    dates in many formats -- convert to ISO before calling. Duplicate
+    invoice numbers are refused, so re-running a task cannot file the same
+    invoice twice.
     """
     if total_amount <= 0:
         raise LedgerError(f"total_amount must be positive, got {total_amount}")
     if not invoice_number.strip():
         raise LedgerError("invoice_number cannot be empty")
+
+    # Enforced here rather than requested in the prompt. A date like
+    # "02/10/2026" is genuinely ambiguous -- 2 October or 10 February,
+    # depending on the country the document came from -- so a tool that
+    # guessed would quietly file wrong records that look fine. Refusing
+    # pushes the decision back to the step that can still see the
+    # document, and the error says exactly what is wrong, so the repair
+    # ladder can act on it.
+    _require_iso_date(invoice_date)
 
     with _connect() as conn:
         try:
