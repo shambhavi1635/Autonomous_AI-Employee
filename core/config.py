@@ -54,6 +54,13 @@ FAST_MODEL = os.getenv("FAST_MODEL", "gemini-flash-latest").strip()
 # ----------------------------------------------------------------- limits
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 
+# Output token ceiling. Left unset, some models stop part-way through a
+# long structured response, and truncated JSON fails validation with a
+# confusing "output did not match" rather than an obvious "ran out of
+# room". A plan for a multi-step task plus the model's own thinking
+# tokens needs more headroom than the default allows.
+MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "8192"))
+
 # A hard ceiling on how many steps one run may execute. Guards against the
 # classic agent failure: looping forever while spending money.
 MAX_STEPS = int(os.getenv("MAX_STEPS", "25"))

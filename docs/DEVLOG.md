@@ -428,11 +428,13 @@ plan that silently rewrote itself would undermine approving one.
 
 ### Known gaps
 
-- **`verify_goal` has not yet been confirmed against the Wayne case in a
-  live run.** Two attempts were lost to Google-side 503s. The fix is
-  written and the unit tests pass, but the end-to-end proof is owed.
-- **The re-plan rung is unproven live** for the same reason. Its routing
-  is covered by offline tests.
+- ~~`verify_goal` unproven live~~ **Proven.** The Wayne Enterprises run
+  now fails correctly, and every rung fired in one run: step 1's
+  postcondition named the entity and failed ("the listed files do not
+  contain any Wayne Enterprises invoice"), repair was exhausted, the plan
+  was redone and re-approved by the human, the new plan's single step
+  verified cleanly -- and `verify_goal` still failed the run, because
+  listing files is not filing an invoice. Ledger empty throughout.
 - **No LLM response cache.** Most quota today went on re-running the same
   task while fixing bugs, which also made failures hard to reproduce --
   the line-2-vs-line-3 bug disappeared on re-run. A record/replay cache in
@@ -446,3 +448,26 @@ plan that silently rewrote itself would undermine approving one.
 execution feed, a stop button, run history. The graph needs no changes --
 `app_cli.py` was kept free of agent logic precisely so a second front end
 could drive the same machine.
+
+### Addendum: two more problems, found closing the Phase 2 gaps
+
+19. **Truncated structured output read as a schema mismatch.** The lite
+    models stopped part-way through a plan, and the error said "Model
+    output did not match Plan" with JSON cut off mid-sentence -- which
+    points at the wrong cause. **Fix:** set `max_output_tokens`
+    explicitly (the default left no room for a multi-step plan plus the
+    model's thinking tokens), and detect truncation when reporting, so
+    the message says "cut off" rather than "malformed".
+    **Fix 2:** `generate_structured` now makes two attempts, with a
+    slightly higher temperature on the second to move off a bad sample.
+    The same prompt failed twice and then succeeded unchanged, which is
+    exactly the case one retry handles.
+
+20. **A second API key does not grant fresh free quota.** Tested
+    directly: a newly created key showed the same exhausted 20/day limit
+    on `gemini-3.5-flash`. Google tracks the free tier per project or
+    account, not per key. Recorded because it settles the question with
+    evidence rather than assumption. Each *model* does have its own
+    bucket, so pointing `PLANNER_MODEL` and `FAST_MODEL` at two
+    different models spreads load legitimately. The real fixes remain
+    enabling billing, and caching LLM responses during development.

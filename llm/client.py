@@ -152,34 +152,54 @@ class LLMClient:
         temperature defaults to 0.0: for structured decisions we want the
         most likely answer and reproducible behaviour while debugging.
         """
-        response = self._call(
-            prompt,
-            model=model or config.PLANNER_MODEL,
-            system=system,
-            temperature=temperature,
-            schema=schema,
+        # Two attempts. A malformed structured response is usually a bad
+        # sample rather than a model that cannot do the task -- truncated
+        # JSON, a stray fence -- and re-asking fixes it. Observed: the same
+        # prompt failed to parse twice and then succeeded unchanged. One
+        # retry here saves the caller from treating a transient parse
+        # failure as "this task is impossible".
+        last_error: Exception | None = None
+        raw = ""
+
+        for attempt in range(2):
+            response = self._call(
+                prompt,
+                model=model or config.PLANNER_MODEL,
+                system=system,
+                # Nudge the second attempt off the sample that just failed.
+                temperature=temperature if attempt == 0 else max(temperature, 0.3),
+                schema=schema,
+            )
+
+            # The SDK parses the response into the schema when it can.
+            parsed = getattr(response, "parsed", None)
+            if isinstance(parsed, schema):
+                return parsed
+
+            raw = (response.text or "").strip()
+            if not raw:
+                last_error = LLMError("model returned nothing")
+                continue
+
+            # Some model/tool combinations wrap JSON in a markdown fence
+            # despite the schema being set. Strip it and validate manually.
+            raw = _strip_code_fence(raw)
+            try:
+                return schema.model_validate_json(raw)
+            except ValidationError as exc:
+                last_error = exc
+
+        truncated = bool(raw) and not raw.rstrip().endswith(("}", "]"))
+        hint = (
+            "\nThe output stops mid-structure, so it was cut off rather than "
+            "malformed -- raise MAX_OUTPUT_TOKENS."
+            if truncated
+            else ""
         )
-
-        # The SDK parses the response into the schema for us when it can.
-        parsed = getattr(response, "parsed", None)
-        if isinstance(parsed, schema):
-            return parsed
-
-        raw = (response.text or "").strip()
-        if not raw:
-            raise LLMError(f"Model returned nothing for schema {schema.__name__}.")
-
-        # Fallback: some model/tool combinations wrap JSON in a markdown
-        # fence despite the schema being set. Strip it and validate manually.
-        raw = _strip_code_fence(raw)
-
-        try:
-            return schema.model_validate_json(raw)
-        except ValidationError as exc:
-            raise LLMError(
-                f"Model output did not match {schema.__name__}.\n"
-                f"--- raw output ---\n{raw[:2000]}\n--- error ---\n{exc}"
-            ) from exc
+        raise LLMError(
+            f"Model output did not match {schema.__name__} after 2 attempts.{hint}\n"
+            f"--- raw output ---\n{raw[:1500]}\n--- error ---\n{last_error}"
+        ) from last_error
 
     # ------------------------------------------------------------ internals
     def _call(
@@ -192,7 +212,10 @@ class LLMClient:
         schema: type[BaseModel] | None,
     ) -> Any:
         """Single API call with exponential backoff on transient failures."""
-        cfg: dict[str, Any] = {"temperature": temperature}
+        cfg: dict[str, Any] = {
+            "temperature": temperature,
+            "max_output_tokens": config.MAX_OUTPUT_TOKENS,
+        }
         if system:
             cfg["system_instruction"] = system
         if schema is not None:
