@@ -54,11 +54,11 @@ FAST_MODEL = os.getenv("FAST_MODEL", "gemini-flash-latest").strip()
 # ----------------------------------------------------------------- limits
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 
-# Output token ceiling. Left unset, some models stop part-way through a
-# long structured response, and truncated JSON fails validation with a
-# confusing "output did not match" rather than an obvious "ran out of
-# room". A plan for a multi-step task plus the model's own thinking
-# tokens needs more headroom than the default allows.
+# Output token ceiling, set explicitly so a long plan has room. Note: a
+# truncation theory for the "output did not match Plan" failures turned
+# out to be wrong -- finish_reason was STOP and the JSON was complete.
+# The real cause was an unquoted placeholder, handled in schemas.py. This
+# stays as cheap insurance against real truncation on longer plans.
 MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "8192"))
 
 # A hard ceiling on how many steps one run may execute. Guards against the

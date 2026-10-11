@@ -351,7 +351,8 @@ def finalise(state: AgentState) -> AgentState:
     # check looks at the request and the whole trace together, which is
     # the only vantage point from which "right steps, wrong thing" is
     # visible.
-    goal = verify_goal(state["task"], results, client=LLMClient())
+    plan = Plan.model_validate(state["plan"])
+    goal = verify_goal(state["task"], results, plan.steps, client=LLMClient())
     if not goal.fulfilled:
         return {
             "status": "failed",

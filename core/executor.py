@@ -133,8 +133,13 @@ got what they asked for.
 What the user asked for:
     {task}
 
-What was done, with the evidence observed after each step:
+What was done -- the tool each step actually ran, and what was observed
+afterwards when checking it:
 {trace}
+
+Note that the "observed afterwards" line describes a read-only check, not
+the action. A step that filed a record will be confirmed by a lookup; do
+not read that lookup as meaning nothing was filed.
 
 Steps can all succeed while the wrong thing is done. Answer false if:
 
@@ -161,6 +166,7 @@ class GoalVerdict(BaseModel):
 def verify_goal(
     task: str,
     results: list[dict[str, Any]],
+    steps: list[Step] | None = None,
     *,
     client: LLMClient,
 ) -> GoalVerdict:
@@ -181,10 +187,28 @@ def verify_goal(
     No step can catch this, because no step is wrong. Only something
     looking at the request and the whole trace together can.
     """
-    trace = "\n".join(
-        f"  step {r['step_id']}: {r.get('evidence') or r.get('error') or 'no evidence'}"
-        for r in results
-    ) or "  (nothing ran)"
+    # The trace must say what each step DID, not only what was observed
+    # afterwards. Evidence lines describe the verification probe -- and a
+    # probe is deliberately read-only, so a trace of evidence alone reads
+    # as a sequence of lookups. That exact gap produced a false failure:
+    # an invoice was filed correctly, step 3's evidence said "find_invoice
+    # returned the record" (the probe), and the judge concluded the agent
+    # had only looked it up and never filed anything.
+    by_id = {s.id: s for s in (steps or [])}
+    lines = []
+    for result in results:
+        step = by_id.get(result["step_id"])
+        action = (
+            f"ran {step.tool}({step.arguments_json}) -- {step.intent}"
+            if step
+            else "ran (step details unavailable)"
+        )
+        observed = result.get("evidence") or result.get("error") or "no evidence"
+        lines.append(
+            f"  step {result['step_id']}: {action}\n"
+            f"      observed afterwards: {observed}"
+        )
+    trace = "\n".join(lines) or "  (nothing ran)"
 
     try:
         return client.generate_structured(

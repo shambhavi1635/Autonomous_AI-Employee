@@ -42,6 +42,37 @@ class TestStep:
         with pytest.raises(ValidationError):
             make_step(**{field: blank})
 
+    def test_unquoted_placeholder_in_a_numeric_field_is_repaired(self):
+        # Told placeholders may fill numeric fields, models write
+        #     "total_amount": {{step_2.output}}
+        # with no quotes, which is not valid JSON. The intent is
+        # unambiguous and the repair is mechanical, so a plan that is
+        # otherwise correct should not be thrown away over it.
+        step = make_step(
+            arguments_json='{"vendor": "{{step_2.output}}",'
+                           ' "total_amount": {{step_2.output}}}'
+        )
+        assert step.arguments == {
+            "vendor": "{{step_2.output}}",
+            "total_amount": "{{step_2.output}}",
+        }
+
+    def test_repair_leaves_quoted_placeholders_alone(self):
+        step = make_step(arguments_json='{"a": "{{step_1.output}}"}')
+        assert step.arguments == {"a": "{{step_1.output}}"}
+
+    def test_repair_handles_several_in_one_object(self):
+        step = make_step(
+            arguments_json='{"a": {{step_1.output}}, "b": {{step_2.output}}}'
+        )
+        assert step.arguments == {
+            "a": "{{step_1.output}}", "b": "{{step_2.output}}"
+        }
+
+    def test_repair_does_not_rescue_genuinely_broken_json(self):
+        with pytest.raises(ValidationError):
+            make_step(arguments_json="{not json at all")
+
     def test_only_irreversible_steps_need_approval(self):
         assert make_step(risk=Risk.READ).needs_approval is False
         assert make_step(risk=Risk.WRITE).needs_approval is False

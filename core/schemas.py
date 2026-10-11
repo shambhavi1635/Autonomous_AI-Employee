@@ -19,10 +19,16 @@ That split is the whole point. If the model could write its own results,
 from __future__ import annotations
 
 import json
+import re
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+# An unquoted {{step_N.output}} sitting where a JSON value belongs.
+# Matches only after a colon, so placeholders already quoted are untouched.
+_BARE_PLACEHOLDER = re.compile(r"(:\s*)(\{\{step_\d+\.output\}\})")
 
 
 class Risk(str, Enum):
@@ -109,13 +115,27 @@ class Step(BaseModel):
         Caught here, at plan time, the human sees a clean error before
         approving. Caught at run time, it is a crash mid-execution.
         """
+        text = value or "{}"
         try:
-            parsed = json.loads(value or "{}")
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"not valid JSON: {exc}") from exc
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            # One known malformation, repaired rather than rejected.
+            # Told that placeholders may fill numeric fields, models write
+            #     "total_amount": {{step_2.output}}
+            # with no quotes, which is not valid JSON. The intent is
+            # unambiguous and the repair is mechanical, so fixing it beats
+            # failing a plan that is otherwise correct -- and beats asking
+            # the prompt more firmly, which only works most of the time.
+            repaired = _BARE_PLACEHOLDER.sub(r'\1"\2"', text)
+            try:
+                parsed = json.loads(repaired)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"not valid JSON: {exc}") from exc
+            text = repaired
+
         if not isinstance(parsed, dict):
             raise ValueError(f"must be a JSON object, got {type(parsed).__name__}")
-        return value
+        return text
 
     @property
     def arguments(self) -> dict[str, Any]:
