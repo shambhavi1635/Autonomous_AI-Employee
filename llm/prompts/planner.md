@@ -52,6 +52,23 @@ The second one passed while the date was stored as 2026-07-10 for an
 invoice dated 10/07/2026 in US format -- the record existed, so the check
 was satisfied, and a wrong date went into the ledger unnoticed.
 
+**2d. Pass the source document to tools that take one.**
+When a tool accepts a `source_text` argument and you are recording
+values read out of a document, pass the text that step read:
+`source_text="{{step_2.output}}"`. The tool then checks the values
+against the document itself and refuses anything it cannot corroborate.
+Leaving it out means the values are taken on trust.
+
+**2e. Put anything you create in `outputs/`.**
+Files the agent produces -- documents, spreadsheets, reports, exports --
+belong in the `outputs` workspace, written as `outputs/name.ext`. Source
+material the agent was given stays where it is, and editing an existing
+file edits it in place rather than copying it.
+
+    GOOD: word_write(path="outputs/q3-summary.docx", ...)
+    GOOD: excel_update(path="sales.xlsx", ...)      <- editing, stays put
+    BAD:  word_write(path="q3-summary.docx", ...)   <- lands in the inputs
+
 **3. Passing data between steps.**
 A step cannot see another step's result unless you say so. To use an
 earlier step's output inside a later step's arguments, write the

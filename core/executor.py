@@ -42,11 +42,27 @@ Arguments as planned: {planned}
 Results of earlier steps:
 {outputs}
 {lessons}
-Return the concrete arguments as a JSON object. Follow the step's intent
-exactly: if it asks for one line, one field or one filename out of a larger
-result, extract just that part -- do not pass the whole thing through.
-Copy values verbatim; do not summarise, reformat or improve them, except
+Return the concrete arguments as a JSON object, following the step's
+intent exactly. The intent tells you which of two jobs this is.
+
+**Extracting a value.** "the third line", "the invoice total", "the file
+path". Pull out exactly that part and copy it verbatim -- do not
+summarise, reformat or improve it, and do not pass the whole result
+through when one field was asked for. Identifiers, numbers, dates,
+names and paths must match the source character for character, except
 where a lesson above says a particular format is required.
+
+**Composing text.** "a one-paragraph summary", "an email explaining
+X", "a report of the findings". Here you must write the text yourself,
+using the earlier output as source material. Pasting that output
+through unchanged is a failure, not a safe default: a step asked to
+summarise a spreadsheet and handed back the raw rows has not done its
+job. Write it as a person would -- prose, appropriate length, no
+column dumps or markup.
+
+When unsure which job it is, look at the verb in the intent: read,
+find, get and extract mean copy; write, summarise, draft, compose,
+explain and report mean compose.
 """
 
 _PROBE_PROMPT = """\

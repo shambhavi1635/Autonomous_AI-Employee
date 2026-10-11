@@ -28,6 +28,16 @@ load_dotenv(PROJECT_ROOT / ".env")
 SANDBOX_DIR = PROJECT_ROOT / "sandbox"
 
 
+# Everything the agent produces goes here, separate from the material it
+# was given. Mixed together, there is no way to tell at a glance what the
+# agent did from what was already on disk -- which matters for trusting
+# it, and for clearing up after a demo without deleting the fixtures.
+# Override with OUTPUTS_DIR in .env to put it on the Desktop or a share.
+OUTPUTS_DIR = Path(
+    os.getenv("OUTPUTS_DIR", "").strip() or PROJECT_ROOT / "AI_Colleague Outputs"
+).expanduser()
+
+
 def _parse_workspaces() -> dict[str, Path]:
     """The directories the agent's file tools may touch, by name.
 
@@ -45,7 +55,7 @@ def _parse_workspaces() -> dict[str, Path]:
     touch the folders you nominated" is a claim that holds even when the
     model misbehaves, and `write_file` overwrites without warning.
     """
-    workspaces = {"sandbox": SANDBOX_DIR}
+    workspaces = {"sandbox": SANDBOX_DIR, "outputs": OUTPUTS_DIR}
 
     for entry in os.getenv("WORKSPACES", "").split(";"):
         entry = entry.strip()
@@ -54,7 +64,7 @@ def _parse_workspaces() -> dict[str, Path]:
         name, _, raw_path = entry.partition("=")
         name = name.strip().lower()
         path = Path(raw_path.strip()).expanduser()
-        if name and name != "sandbox" and path.is_dir():
+        if name and name not in ("sandbox", "outputs") and path.is_dir():
             workspaces[name] = path.resolve()
 
     return workspaces
@@ -118,6 +128,7 @@ def ensure_dirs() -> None:
     clone it does not exist and the checkpointer would fail to open."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def require_api_key() -> str:

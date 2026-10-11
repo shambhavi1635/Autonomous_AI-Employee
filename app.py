@@ -13,6 +13,8 @@ from langgraph.types import Command
 import tools.documents  # noqa: F401  -- importing registers the tools
 import tools.files  # noqa: F401
 import tools.ledger  # noqa: F401
+import tools.browser  # noqa: F401
+import tools.mail  # noqa: F401
 import tools.office  # noqa: F401
 import tools.report  # noqa: F401
 from core import config

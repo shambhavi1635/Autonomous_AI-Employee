@@ -26,9 +26,15 @@ import sqlite3
 from datetime import datetime
 from typing import Any
 
-from core.config import LEDGER_DB, SANDBOX_DIR, ensure_dirs
+from core.config import LEDGER_DB, OUTPUTS_DIR, ensure_dirs
 from core.schemas import Risk
 from tools.registry import tool
+from tools.source_check import (
+    SourceMismatch,
+    check_amount,
+    check_date,
+    check_text,
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS invoices (
@@ -52,7 +58,7 @@ CREATE TABLE IF NOT EXISTS invoices (
 # One-way on purpose: the agent never reads it, and editing it changes
 # nothing. A second writable copy of the same data is how two sources of
 # truth start disagreeing.
-LEDGER_CSV = SANDBOX_DIR / "ledger_view.csv"
+LEDGER_CSV = OUTPUTS_DIR / "ledger_view.csv"
 
 
 class LedgerError(RuntimeError):
@@ -88,13 +94,17 @@ def add_invoice(
     invoice_date: str,
     total_amount: float,
     currency: str = "USD",
+    source_text: str = "",
 ) -> str:
-    """File an invoice. invoice_date MUST be ISO YYYY-MM-DD; invoice numbers must be unique.
+    """File an invoice. Pass source_text so the values are checked against the document.
 
-    Use this once the invoice details have been extracted. Documents write
-    dates in many formats -- convert to ISO before calling. Duplicate
-    invoice numbers are refused, so re-running a task cannot file the same
-    invoice twice.
+    invoice_date must be ISO YYYY-MM-DD. Duplicate invoice numbers are
+    refused, so re-running a task cannot file the same invoice twice.
+
+    Always pass `source_text`: the text the details were read from, as
+    returned by read_pdf or read_file. The vendor, invoice number, amount
+    and date are then checked against it, and the filing is refused if
+    they do not match. Without it the values are taken on trust.
     """
     if total_amount <= 0:
         raise LedgerError(f"total_amount must be positive, got {total_amount}")
@@ -109,6 +119,19 @@ def add_invoice(
     # document, and the error says exactly what is wrong, so the repair
     # ladder can act on it.
     _require_iso_date(invoice_date)
+
+    # Checked in Python, not by asking a model whether it matches. An
+    # invoice was once filed with the date read the wrong way round and
+    # every check passed, because each check asked whether a record
+    # existed rather than whether it was right.
+    if source_text.strip():
+        try:
+            check_text("vendor", vendor, source_text)
+            check_text("invoice_number", invoice_number, source_text)
+            check_amount(float(total_amount), source_text)
+            check_date(invoice_date.strip(), source_text)
+        except SourceMismatch as exc:
+            raise LedgerError(str(exc)) from exc
 
     with _connect() as conn:
         try:
@@ -200,3 +223,89 @@ def list_invoices(vendor: str = "") -> list[dict[str, Any]]:
             ).fetchall()
 
     return [dict(row) for row in rows]
+
+
+# Fields a correction may touch. invoice_number is excluded on purpose:
+# it is the identity of the record and the thing the UNIQUE constraint
+# protects, so "changing" it is really filing a different invoice. id
+# and filed_at are the ledger's own bookkeeping, not business data.
+EDITABLE_FIELDS = ("vendor", "invoice_date", "total_amount", "currency")
+
+
+@tool(risk=Risk.WRITE)
+def update_invoice(invoice_number: str, field: str, value: str) -> str:
+    """Correct one field of an invoice already in the ledger.
+
+    field must be one of: vendor, invoice_date, total_amount, currency.
+    Dates must be ISO YYYY-MM-DD and amounts must be positive, the same
+    rules that apply when filing. The invoice number itself cannot be
+    changed -- that identifies the record.
+
+    Returns what the value was and what it now is, so the change is
+    visible rather than silent.
+    """
+    column = field.strip().lower()
+    if column not in EDITABLE_FIELDS:
+        raise LedgerError(
+            f"{field!r} cannot be changed. Editable fields: "
+            f"{', '.join(EDITABLE_FIELDS)}."
+        )
+
+    existing = find_invoice(invoice_number)
+    if isinstance(existing, str):
+        raise LedgerError(existing)
+
+    # The same validation as filing. A correction that bypassed the rules
+    # would be a back door into the ledger: refuse an ambiguous date on
+    # the way in, accept it on the way through update_invoice.
+    cleaned: object = value.strip()
+    if column == "invoice_date":
+        _require_iso_date(value)
+    elif column == "total_amount":
+        try:
+            cleaned = float(value)
+        except ValueError:
+            raise LedgerError(f"total_amount must be a number, got {value!r}") from None
+        if cleaned <= 0:
+            raise LedgerError(f"total_amount must be positive, got {cleaned}")
+    elif column == "currency":
+        cleaned = value.strip().upper()
+
+    before = existing[column]
+    with _connect() as conn:
+        conn.execute(
+            f"UPDATE invoices SET {column} = ? WHERE invoice_number = ?",
+            (cleaned, invoice_number.strip()),
+        )
+    _export_csv()
+
+    return (
+        f"Invoice {invoice_number.strip()}: {column} changed from "
+        f"{before!r} to {cleaned!r}."
+    )
+
+
+@tool(risk=Risk.IRREVERSIBLE)
+def delete_invoice(invoice_number: str) -> str:
+    """Remove an invoice from the ledger permanently. Always needs approval.
+
+    There is no undo and no archive -- the row is gone. Use
+    update_invoice to correct a mistake; use this only when a record
+    should never have existed at all.
+    """
+    existing = find_invoice(invoice_number)
+    if isinstance(existing, str):
+        raise LedgerError(existing)
+
+    with _connect() as conn:
+        conn.execute(
+            "DELETE FROM invoices WHERE invoice_number = ?",
+            (invoice_number.strip(),),
+        )
+    _export_csv()
+
+    return (
+        f"Deleted invoice {existing['invoice_number']} from "
+        f"{existing['vendor']} ({existing['currency']} "
+        f"{existing['total_amount']:,.2f}, dated {existing['invoice_date']})."
+    )
