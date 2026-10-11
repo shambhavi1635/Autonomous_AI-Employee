@@ -153,6 +153,12 @@ def resolve_arguments(
     )
 
     try:
+        # FAST_MODEL is enough here, and that was measured rather than
+        # assumed. One run extracted line 2 when the intent said the third
+        # line, which looked like the cheap model being bad at counting --
+        # but re-running the same resolution five times gave 5/5 correct.
+        # The failure was nondeterminism, not capability, so the answer is
+        # the retry ladder, not a more expensive model on every step.
         resolved = client.generate_structured(
             prompt, ResolvedArguments, model=config.FAST_MODEL
         )
