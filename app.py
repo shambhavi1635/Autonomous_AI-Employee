@@ -1,23 +1,4 @@
-"""Streamlit front end.
 
-    venv\\python.exe -m streamlit run app.py
-
-Like app_cli.py, this file holds no agent logic. It renders what the graph
-reports and collects answers at the gates. Both front ends drive the same
-compiled graph, which is why adding this one required no change to core/.
-
-The thing that makes a Streamlit agent UI awkward is that Streamlit
-re-executes this entire script on every interaction -- every click, every
-keystroke in a text box. Anything held in a Python variable is gone.
-
-That would normally force the agent into a background thread with a queue,
-and careful thought about what happens if the browser is refreshed
-mid-run. None of that is needed here, because the graph checkpoints its
-own state to SQLite. A rerun just reloads it. Refresh the page during an
-approval and the gate is still there; close the laptop and reopen it
-tomorrow and the run is still waiting. The only thing this file keeps
-between reruns is which run you are looking at.
-"""
 
 from __future__ import annotations
 
@@ -37,7 +18,8 @@ from core import config
 from core.graph import build_graph, open_checkpointer
 from core.schemas import Plan, Risk
 
-st.set_page_config(page_title="AI Task Worker", page_icon=":material/smart_toy:", layout="wide")
+st.set_page_config(page_title="AI Task Worker",
+                   page_icon=":material/smart_toy:", layout="wide")
 
 RISK_BADGE = {"read": ":green[read]", "write": ":orange[write]",
               "irreversible": ":red[**irreversible**]"}
@@ -156,7 +138,8 @@ def render_plan_gate(graph, cfg, gate: dict[str, Any]) -> None:
             st.error(f"That edit does not make a valid plan: {exc}")
             return
 
-        unchanged = revised.model_dump(mode="json")["steps"] == gate["plan"]["steps"]
+        unchanged = revised.model_dump(
+            mode="json")["steps"] == gate["plan"]["steps"]
         decision = (
             {"action": "approve"}
             if unchanged
@@ -344,7 +327,8 @@ def render_ledger() -> None:
             return
         st.dataframe(
             pd.DataFrame(rows)[
-                ["vendor", "invoice_number", "invoice_date", "total_amount", "currency"]
+                ["vendor", "invoice_number", "invoice_date",
+                    "total_amount", "currency"]
             ],
             use_container_width=True,
             hide_index=True,
@@ -363,7 +347,8 @@ def sidebar(graph, saver) -> None:
         seen: dict[str, str] = {}
         for checkpoint in saver.list(None, limit=200):
             thread = checkpoint.config["configurable"]["thread_id"]
-            seen.setdefault(thread, (checkpoint.checkpoint.get("ts") or "")[:16])
+            seen.setdefault(
+                thread, (checkpoint.checkpoint.get("ts") or "")[:16])
 
         for thread, when in list(seen.items())[:15]:
             label = f"{thread}  ·  {when}"
