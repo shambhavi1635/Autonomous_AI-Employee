@@ -33,6 +33,12 @@ SANDBOX_DIR = PROJECT_ROOT / "sandbox"
 DATA_DIR = PROJECT_ROOT / "data"
 CHECKPOINT_DB = DATA_DIR / "checkpoints.sqlite"
 
+# The stand-in for a company's internal system. A separate database from
+# the checkpoints on purpose: one is the agent's own memory of a run, the
+# other is business data the agent is acting on. Mixing them would make
+# "clear the agent's state" also mean "delete the company's records".
+LEDGER_DB = DATA_DIR / "ledger.sqlite"
+
 # ---------------------------------------------------------------- secrets
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
 
