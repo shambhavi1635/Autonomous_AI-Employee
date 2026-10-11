@@ -471,3 +471,156 @@ could drive the same machine.
     bucket, so pointing `PLANNER_MODEL` and `FAST_MODEL` at two
     different models spreads load legitimately. The real fixes remain
     enabling billing, and caching LLM responses during development.
+
+---
+
+## Phase 3 -- The user interface
+
+**Date:** 2026-10-11
+**Goal:** A browser UI: task entry, the plan as an editable table, both
+approval gates, a live execution feed, results, run history.
+**Status:** Working, driven end to end in a browser.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `app.py` | The Streamlit front end. |
+| `tools/report.py` | `report(answer)` -- how the agent answers a question. |
+| `sandbox/expenses.csv` | A second demo file, so the system is visibly not invoice-only. |
+| `.claude/launch.json` | Run configuration for the dev server. |
+
+### The architectural payoff
+
+`core/` was not touched. Two front ends -- `app_cli.py` and `app.py` --
+drive the same compiled graph, because `app_cli.py` was deliberately kept
+free of agent logic in Phase 1. The boundary cost nothing to maintain and
+paid for itself here.
+
+### Design decisions
+
+| Decision | Choice | Reasoning |
+|---|---|---|
+| Streamlit's rerun model | Ignored it | Streamlit re-executes the script on every interaction, which usually forces a background thread and a queue. The graph checkpoints itself, so a rerun just reloads. The only thing kept between reruns is which run is being viewed. |
+| Where gates come from | The checkpointed snapshot, not the last call's return | `pending_gate()` reads `snapshot.tasks[].interrupts`. That is what lets a refreshed browser -- or a different session tomorrow -- pick up a paused run exactly where it stopped. |
+| Live feed | `graph.stream()` | Yields after each node, so the page fills in as the agent works. No threads. |
+| Plan editing | A table, validated on approval | Edits are re-validated exactly like a model-written plan, because a human edit can break one just as easily -- a deleted step a later one referenced, a tool name typed wrong. |
+| Abandoned runs | A "Continue" button | Navigating away ends the Streamlit request but not the run, since its state is checkpointed. Without this the UI offered no way back in. |
+| Answering questions | A `report` tool | See problem 23. |
+
+### Problems encountered
+
+21. **Invalid Streamlit icons.** `st.error(msg, icon="!")` raises --
+    Streamlit wants an emoji or a `:material/name:` shortcode. Found in
+    the first thirty seconds of actually running the app, which is the
+    argument for running it rather than reasoning about it.
+
+22. **A wrong diagnosis, corrected by measuring.** Plans were failing with
+    "Model output did not match Plan", and the raw output in the error
+    appeared to stop mid-sentence, so the conclusion was truncation and
+    `max_output_tokens` was added. Checking properly: `finish_reason` was
+    `STOP` and the JSON was complete and well formed. **The "cut off"
+    output was this project's own 1500-character slice in the error
+    message** -- a misread of our own debug output.
+
+    The real cause: the model wrote `"total_amount": {{step_2.output}}`
+    with the placeholder **unquoted**, which is not valid JSON. It had
+    been told placeholders may fill numeric fields and dropped the
+    quotes. **Fix:** repair it in `Step`'s validator -- the malformation
+    is specific and the intent unambiguous, so a mechanical fix beats
+    asking the prompt more firmly, which works only most of the time.
+    Four regression tests. The misleading comment in `config.py` was
+    corrected rather than left to mislead someone later.
+
+23. **The agent could not answer a question.** Asked to "show the second
+    entry of expenses.csv", it read the file and reported success -- with
+    the whole file as the output. The answer was in there, buried, and
+    nothing singled it out. Every other tool changes or inspects the
+    world; none could *say* anything, so a task could be executed
+    perfectly and leave the person who asked no better off.
+    **Fix:** `report(answer)`, a tool that returns what it is given. The
+    work is nothing; the value is that argument resolution fills `answer`
+    from earlier outputs guided by the step's intent, so the relevant
+    part is extracted rather than passed through whole. Plus planner rule
+    4b and an Answer block in the UI.
+    **Worth noting:** adding an entirely new category of capability --
+    communication -- cost one decorated function and one prompt rule. No
+    change to the planner, executor, graph or schemas.
+
+24. **The goal verifier wrongly failed a correct run.** A Globex invoice
+    was filed correctly, and `verify_goal` reported "the steps only
+    located and verified the invoice without performing the filing
+    action". It had been given only the `evidence` lines -- which
+    describe the *verification probe*, and probes are read-only by
+    design. Step 3's evidence read "find_invoice returned the record",
+    so the trace looked like a sequence of lookups.
+    **Fix:** the trace now states which tool each step actually ran,
+    alongside what was observed. Confirmed by re-running the judge on the
+    same stored run: `False` before the fix, `True` after.
+
+    **This was the third instance of one pattern.** Problem 9: the step
+    judge could not see the earlier output to compare against. Problem
+    16: the probe did not know which file the step had touched. Problem
+    24: the goal judge did not know which tools had run. Each time the
+    model invented a confident answer rather than saying it could not
+    tell. The lesson is not about prompts: **when a model judges, audit
+    what it can actually see.** The instinct is to reword the prompt; the
+    fix is almost always the inputs.
+
+25. **Step outputs were not shown at all.** The results table showed the
+    evidence column, which describes verification rather than the result.
+    For a question-shaped task the UI reported success while displaying
+    nothing the user had asked for. **Fix:** `render_outputs()` -- a list
+    of records renders as a table, structures as JSON, text as a code
+    block.
+
+26. **Streamlit does not reload imported modules.** A fix to
+    `core/schemas.py` had no effect because the running server still held
+    the old module in `sys.modules`. The same bug appeared to persist
+    after being fixed, which is a particularly wasteful way to lose time.
+    **Rule:** restart the server after changing anything outside
+    `app.py`.
+
+27. **A disabled button lagged a rerun behind.** `disabled=not
+    task.strip()` is only re-evaluated on the rerun that typing triggers,
+    so the first click after typing hit a still-disabled button and did
+    nothing. **Fix:** check the value on click instead.
+
+### Verified in a browser
+
+- Task entry, plan table, approve -> live per-step feed -> results.
+- The Acme and Globex invoices both filed correctly; Globex via a repair
+  that converted `02/10/2026` to ISO after the ledger refused it.
+- Questions answered through `report`, including one requiring the
+  relevant line to be extracted from a larger file.
+- A CSV edited correctly with no CSV-specific code anywhere: "mark every
+  pending Software expense as approved" changed exactly the two matching
+  rows and left the pending Office row alone.
+- Run history: older runs reopen from the checkpoint database.
+- Ledger panel reads the real database rather than reporting what the
+  agent claimed.
+
+### Known gaps
+
+- **No stop button during a step.** Execution runs inside the Streamlit
+  request, so there is nothing to cancel against mid-call. Closing the
+  page is safe -- the run is checkpointed and resumable -- but a real
+  cancel needs the graph on a background thread.
+- **The sandbox is the only reachable directory.** Deliberate, but it
+  means real files must be copied in. A nominated second root is the
+  natural next step.
+- **Prompt rules are followed inconsistently.** Rule 3b (do not copy
+  values from the task) is obeyed most of the time; one run still filed
+  `vendor: "Acme"` where the document said `ACME CORPORATION`. A prompt
+  is a request, not a gate -- the same lesson as the ISO date, where the
+  fix was enforcing it in the tool. The UI partly mitigates this: the
+  wrong value is visible in the plan table and editable before approval.
+- **No LLM response cache**, so development still burns daily quota and
+  failures do not reproduce deterministically.
+
+### Next
+
+**Phase 4 -- memory.** Episodic storage of past runs, retrieval into the
+planner prompt, and reflection that turns failures into lessons. The
+`torch` install problem resurfaces here; the fallback is SQLite plus
+numpy cosine similarity behind the same interface.
