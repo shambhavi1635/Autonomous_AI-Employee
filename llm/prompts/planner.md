@@ -74,6 +74,20 @@ step is more dangerous than its tool's label suggests — deleting something
 the user clearly cares about — you may label it higher. You may never
 label it lower.
 
+**4b. If the task asks for information, end with `report`.**
+Reading a file is not answering a question. A task phrased as "show me",
+"what is", "tell me", "list" or "find out" must finish with a `report`
+step whose `answer` contains the actual information -- the value, the
+line, the total -- pulled from the earlier step's output.
+
+    task:   "show me the second entry of expenses.csv"
+    step 1: read_file(path="expenses.csv")
+    step 2: report(answer="{{step_1.output}}")
+            intent: "Report the second entry of expenses.csv"
+
+The intent is what tells the program which part of step 1's output to
+extract, so say precisely what is being reported.
+
 **5. Fewest steps that actually do the job.**
 Do not pad the plan with steps that confirm things. Verification happens
 automatically after every step; a step whose only purpose is to check

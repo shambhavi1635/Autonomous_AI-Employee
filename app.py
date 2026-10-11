@@ -32,6 +32,7 @@ from langgraph.types import Command
 import tools.documents  # noqa: F401  -- importing registers the tools
 import tools.files  # noqa: F401
 import tools.ledger  # noqa: F401
+import tools.report  # noqa: F401
 from core import config
 from core.graph import build_graph, open_checkpointer
 from core.schemas import Plan, Risk
@@ -234,6 +235,27 @@ def describe(node: str, update: Any) -> None:
         st.write(update.get("message", ""))
 
 
+def render_answer(values: dict[str, Any]) -> None:
+    """Show the agent's answer, when the task was a question.
+
+    A `report` step's output is the answer itself, so it belongs at the
+    top in plain text -- not collapsed in an expander alongside the raw
+    file contents it was extracted from.
+    """
+    plan = values.get("plan")
+    outputs = values.get("outputs") or {}
+    if not plan:
+        return
+
+    for step in plan.get("steps", []):
+        if step.get("tool") == "report":
+            answer = outputs.get(str(step["id"]))
+            if answer:
+                st.subheader("Answer")
+                st.markdown(f"> {answer}")
+            return
+
+
 def render_outcome(values: dict[str, Any]) -> None:
     status = values.get("status", "unknown")
     message = values.get("message", "")
@@ -244,6 +266,8 @@ def render_outcome(values: dict[str, Any]) -> None:
         st.warning(message, icon=":material/block:")
     elif status == "failed":
         st.error(message, icon=":material/error:")
+
+    render_answer(values)
 
     results = values.get("results") or []
     if results:
