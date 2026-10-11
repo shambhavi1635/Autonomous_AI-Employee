@@ -54,6 +54,7 @@ from core.executor import (
     verify_goal,
 )
 from core.planner import PlanningError, make_plan, render
+from core.reflector import reflect, save
 from core.schemas import Plan, StepResult
 from llm.client import LLMClient
 from tools import registry
@@ -69,6 +70,8 @@ class AgentState(TypedDict, total=False):
     results: list[dict[str, Any]]    # StepResult dicts, in order
     attempts: dict[str, int]         # step id (as str) -> tries so far
     replans: int                     # how many times the plan was redone
+    original_plan: dict[str, Any] | None  # as first proposed, if edited
+    repairs: list[dict[str, Any]]    # what failed, and what replaced it
     status: Literal[
         "planning", "awaiting_approval", "running", "done", "failed", "rejected"
     ]
@@ -89,6 +92,8 @@ def plan_node(state: AgentState) -> AgentState:
         "results": [],
         "attempts": {},
         "replans": 0,
+        "original_plan": None,
+        "repairs": [],
         "status": "awaiting_approval",
         "message": "",
     }
@@ -128,6 +133,12 @@ def approval_node(state: AgentState) -> AgentState:
         # model-written one would be: an edit can break a plan too.
         edited = Plan.model_validate(decision["plan"])
         return {
+            # Keep what the model first proposed. The difference between
+            # it and what the human approved is the clearest signal this
+            # system gets about how the planner is wrong, and it is only
+            # available here -- once execution starts, the original is
+            # gone unless it was kept.
+            "original_plan": state["plan"],
             "plan": edited.model_dump(mode="json"),
             "status": "running",
             "message": "Plan edited by the operator before execution.",
@@ -230,10 +241,28 @@ def repair_node(state: AgentState) -> AgentState:
     attempts = dict(state.get("attempts", {}))
     attempts[str(step.id)] = attempts.get(str(step.id), 1) + 1
 
+    # Keep a record of what went wrong and what replaced it. The failed
+    # result itself is dropped below so the final results list reflects
+    # what actually happened -- but a repair is the most instructive
+    # event in a run, and reflection cannot learn from it if the only
+    # trace is an attempts counter. This is what turns "step 3 was tried
+    # twice" into "add_invoice refuses non-ISO dates".
+    repairs = list(state.get("repairs", []))
+    repairs.append(
+        {
+            "step_id": step.id,
+            "intent": step.intent,
+            "tried": f"{step.tool}({step.arguments_json})",
+            "failed_because": failed.error or failed.evidence or "unknown",
+            "replaced_with": f"{repaired.tool}({repaired.arguments_json})",
+        }
+    )
+
     return {
         "plan": plan.model_dump(mode="json"),
         "cursor": cursor,                 # rewind to re-run this step
         "results": state["results"][:-1],  # drop the failed attempt
+        "repairs": repairs,
         "attempts": attempts,
         "message": (
             f"Step {step.id} failed ({failed.error or failed.evidence}); "
@@ -368,6 +397,49 @@ def finalise(state: AgentState) -> AgentState:
     }
 
 
+def reflect_node(state: AgentState) -> AgentState:
+    """Work out what this run taught, and remember it.
+
+    Runs after `finalise`, so it sees the final verdict including the
+    goal check. Deliberately the last thing that happens and deliberately
+    unable to fail the run: the work is already done and verified, and
+    memory is an enhancement. A reflection that errors is a reflection
+    skipped, not a task undone.
+    """
+    if not state.get("plan"):
+        return {}
+
+    plan = Plan.model_validate(state["plan"])
+    original = (
+        Plan.model_validate(state["original_plan"])
+        if state.get("original_plan")
+        else None
+    )
+
+    try:
+        reflection = reflect(
+            state["task"],
+            plan,
+            state.get("results", []),
+            state.get("status", ""),
+            state.get("message", ""),
+            original_plan=original,
+            repairs=state.get("repairs", []),
+        )
+        if reflection is not None:
+            save(
+                reflection,
+                state["task"],
+                plan,
+                state.get("status", ""),
+                state.get("message", ""),
+            )
+    except Exception:
+        pass
+
+    return {}
+
+
 def build_graph(checkpointer: SqliteSaver):
     """Wire the nodes together and compile."""
     builder = StateGraph(AgentState)
@@ -378,6 +450,7 @@ def build_graph(checkpointer: SqliteSaver):
     builder.add_node("repair", repair_node)
     builder.add_node("replan", replan_node)
     builder.add_node("finalise", finalise)
+    builder.add_node("reflect", reflect_node)
 
     builder.add_edge(START, "plan")
     builder.add_edge("plan", "approve")
@@ -400,7 +473,8 @@ def build_graph(checkpointer: SqliteSaver):
         "repair", lambda s: END if s.get("status") == "failed" else "step",
         {"step": "step", END: "finalise"},
     )
-    builder.add_edge("finalise", END)
+    builder.add_edge("finalise", "reflect")
+    builder.add_edge("reflect", END)
 
     return builder.compile(checkpointer=checkpointer)
 

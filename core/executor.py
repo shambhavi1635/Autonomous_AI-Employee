@@ -41,11 +41,12 @@ Arguments as planned: {planned}
 
 Results of earlier steps:
 {outputs}
-
+{lessons}
 Return the concrete arguments as a JSON object. Follow the step's intent
 exactly: if it asks for one line, one field or one filename out of a larger
 result, extract just that part -- do not pass the whole thing through.
-Copy values verbatim; do not summarise, reformat or improve them.
+Copy values verbatim; do not summarise, reformat or improve them, except
+where a lesson above says a particular format is required.
 """
 
 _PROBE_PROMPT = """\
@@ -198,11 +199,17 @@ def verify_goal(
     lines = []
     for result in results:
         step = by_id.get(result["step_id"])
-        action = (
-            f"ran {step.tool}({step.arguments_json}) -- {step.intent}"
-            if step
-            else "ran (step details unavailable)"
-        )
+        # Resolved arguments where we have them. Showing the plan's
+        # arguments_json instead puts "{{step_2.output}}" in front of the
+        # judge, which reads as raw text having been dumped into every
+        # field -- and it failed a correct run for exactly that reason.
+        called_with = result.get("arguments")
+        if step and called_with is not None:
+            action = f"ran {step.tool}({json.dumps(called_with)}) -- {step.intent}"
+        elif step:
+            action = f"ran {step.tool}({step.arguments_json}) -- {step.intent}"
+        else:
+            action = "ran (step details unavailable)"
         observed = result.get("evidence") or result.get("error") or "no evidence"
         lines.append(
             f"  step {result['step_id']}: {action}\n"
@@ -295,6 +302,7 @@ def resolve_arguments(
         intent=step.intent,
         planned=step.arguments_json,
         outputs=outputs,
+        lessons=_lessons_block(),
     )
 
     try:
@@ -340,9 +348,10 @@ def run_tool(step: Step, arguments: dict[str, Any]) -> StepResult:
             step_id=step.id,
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
+            arguments=arguments,
         )
 
-    return StepResult(step_id=step.id, ok=True, output=output)
+    return StepResult(step_id=step.id, ok=True, output=output, arguments=arguments)
 
 
 def verify(
@@ -514,6 +523,36 @@ def repair_step(
         return None
 
     return repaired
+
+
+def _lessons_block() -> str:
+    """Past lessons, for the component that actually picks the values.
+
+    Memory was originally injected only into the planner prompt, which
+    turned out to miss the point for a whole class of lesson. "Convert
+    dates to ISO before calling add_invoice" is not advice about which
+    steps to run -- it is advice about what to *put in an argument*, and
+    that decision is made here, during resolution. The planner read the
+    lesson, wrote a correct plan, and the resolver still produced
+    02/10/2026, because it had never been told.
+
+    The general point: memory has to reach the component that makes the
+    decision, not just the one that looks like it should know.
+    """
+    try:
+        from memory import store
+
+        lessons = store.active_lessons(limit=6)
+    except Exception:
+        return ""
+
+    if not lessons:
+        return ""
+    return (
+        "\nThings learned from earlier runs:\n"
+        + "\n".join(f"- {row['text']}" for row in lessons)
+        + "\n"
+    )
 
 
 def _format_outputs(outputs: dict[int, Any]) -> str:

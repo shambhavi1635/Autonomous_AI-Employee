@@ -27,6 +27,41 @@ load_dotenv(PROJECT_ROOT / ".env")
 # Widening this is a deliberate decision, made here, not in a tool.
 SANDBOX_DIR = PROJECT_ROOT / "sandbox"
 
+
+def _parse_workspaces() -> dict[str, Path]:
+    """The directories the agent's file tools may touch, by name.
+
+    Always includes `sandbox`. More can be added in .env:
+
+        WORKSPACES=work=C:/Users/you/Desktop/agent-files;docs=D:/reports
+
+    Named rather than a bare list so the agent can refer to a place
+    without knowing an absolute path -- "work/report.xlsx" rather than
+    "C:/Users/you/Desktop/agent-files/report.xlsx". That keeps machine
+    paths out of plans the human reads, and out of the model's context.
+
+    An allowlist rather than free rein. Not because the agent could not
+    be given the whole disk -- it is one line -- but because "it can only
+    touch the folders you nominated" is a claim that holds even when the
+    model misbehaves, and `write_file` overwrites without warning.
+    """
+    workspaces = {"sandbox": SANDBOX_DIR}
+
+    for entry in os.getenv("WORKSPACES", "").split(";"):
+        entry = entry.strip()
+        if not entry or "=" not in entry:
+            continue
+        name, _, raw_path = entry.partition("=")
+        name = name.strip().lower()
+        path = Path(raw_path.strip()).expanduser()
+        if name and name != "sandbox" and path.is_dir():
+            workspaces[name] = path.resolve()
+
+    return workspaces
+
+
+WORKSPACES = _parse_workspaces()
+
 # Generated at runtime, gitignored. The checkpoint database is what makes
 # the approval gates durable: the graph writes its whole state here when it
 # pauses, so a run can be resumed minutes later or after a restart.

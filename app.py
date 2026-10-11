@@ -13,6 +13,7 @@ from langgraph.types import Command
 import tools.documents  # noqa: F401  -- importing registers the tools
 import tools.files  # noqa: F401
 import tools.ledger  # noqa: F401
+import tools.office  # noqa: F401
 import tools.report  # noqa: F401
 from core import config
 from core.graph import build_graph, open_checkpointer
@@ -336,6 +337,64 @@ def render_ledger() -> None:
         st.caption(f"`{config.LEDGER_DB.relative_to(config.PROJECT_ROOT)}`")
 
 
+def render_memory() -> None:
+    """Show what the agent has learned, and let a human delete it.
+
+    This panel is not a convenience. Everywhere else, this project
+    refuses to take the model's word for anything -- a step is not done
+    because it says so, the task is not fulfilled because the steps
+    passed. Memory should get the same treatment, and it is the one
+    place where a wrong belief is invisible: a bad lesson does not throw
+    an error, it quietly steers every future plan.
+
+    It has already happened here. A lesson was learned from a run that a
+    then-buggy goal verifier had wrongly failed, so the agent "learned"
+    something untrue about its own correct behaviour. The bug was fixed;
+    the lesson would have outlived it. Hence the delete buttons, and
+    hence showing which run each lesson came from.
+    """
+    from memory import store
+
+    counts = store.stats()
+    with st.expander(
+        f"Memory ({counts['lessons']} lesson{'' if counts['lessons'] == 1 else 's'}, "
+        f"{counts['episodes']} run{'' if counts['episodes'] == 1 else 's'})",
+        expanded=False,
+    ):
+        lessons = store.active_lessons_with_source()
+        if not lessons and not counts["facts"]:
+            st.caption("Nothing learned yet. Memory is written after each run.")
+            return
+
+        if lessons:
+            st.caption("**Lessons** — shown to the planner before every task")
+            for row in lessons:
+                source = row["source_status"]
+                flag = " :red[from a failed run]" if source == "failed" else ""
+                left, right = st.columns([8, 1])
+                left.markdown(f"- {row['text']}{flag}")
+                left.caption(f"used {row['uses']}x")
+                if right.button("✕", key=f"del-lesson-{row['id']}",
+                                help="Forget this lesson"):
+                    store.delete_lesson(row["id"])
+                    st.rerun()
+
+        facts = store.all_facts()
+        if facts:
+            st.caption("**Facts**")
+            for row in facts:
+                left, right = st.columns([8, 1])
+                left.markdown(
+                    f"- **{row['subject']}** · {row['predicate']} = {row['value']}"
+                )
+                if right.button("✕", key=f"del-fact-{row['id']}",
+                                help="Forget this fact"):
+                    store.delete_fact(row["id"])
+                    st.rerun()
+
+        st.caption(f"`{store.MEMORY_DB.relative_to(config.PROJECT_ROOT)}`")
+
+
 def sidebar(graph, saver) -> None:
     with st.sidebar:
         st.header("Runs")
@@ -355,6 +414,10 @@ def sidebar(graph, saver) -> None:
             if st.button(label, key=f"open-{thread}", use_container_width=True):
                 st.session_state["thread_id"] = thread
                 st.rerun()
+
+        st.divider()
+        render_memory()
+        render_ledger()
 
         st.divider()
         st.caption(

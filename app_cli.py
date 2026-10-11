@@ -33,6 +33,7 @@ from rich.table import Table
 import tools.files  # noqa: F401  -- importing registers the tools
 import tools.documents  # noqa: F401
 import tools.ledger  # noqa: F401
+import tools.office  # noqa: F401
 import tools.report  # noqa: F401
 from core.graph import build_graph, open_checkpointer
 from core.schemas import Plan

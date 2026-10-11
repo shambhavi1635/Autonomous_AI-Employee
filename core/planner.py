@@ -40,14 +40,83 @@ class PlanningError(RuntimeError):
     """The model could not produce a usable plan."""
 
 
-def build_prompt(task: str) -> str:
-    """Compose the planner prompt from the template and the live catalog."""
+def recall(task: str) -> str:
+    """What the agent knows that is relevant to this task.
+
+    Three things, in increasing generality: plans that worked for similar
+    tasks, lessons from past runs, and facts about named things.
+
+    Everything here is capped. The temptation is to pass all of memory
+    on the grounds that the model can ignore what is irrelevant -- but it
+    does not ignore it, it tries to use it. A planner shown three
+    unrelated past plans will try to follow them, so `most_similar`
+    applies a threshold and returns nothing when nothing is close
+    enough. No memory is better than misleading memory.
+    """
+    from memory import store
+    from memory.semantic import get_embedder, most_similar
+
+    sections: list[str] = []
+
+    # Only episodes embedded by the model currently loaded: vectors
+    # from different embedders are not comparable.
+    episodes = store.episodes_with_embeddings(get_embedder().name)
+    similar = most_similar(task, [(e, v) for e, v in episodes], top_k=2)
+    if similar:
+        lines = []
+        for episode, score in similar:
+            outcome = "worked" if episode.succeeded else f"FAILED: {episode.outcome}"
+            tools_used = " -> ".join(
+                s.get("tool", "?") for s in episode.plan.get("steps", [])
+            )
+            lines.append(
+                f'- "{episode.summary}" ({outcome})\n    {tools_used}'
+            )
+        sections.append("Similar tasks you have done before:\n" + "\n".join(lines))
+
+    lessons = store.active_lessons()
+    if lessons:
+        store.mark_lessons_used([row["id"] for row in lessons])
+        sections.append(
+            "Things you have learned:\n"
+            + "\n".join(f"- {row['text']}" for row in lessons)
+        )
+
+    facts = store.all_facts()
+    if facts:
+        sections.append(
+            "Facts you have recorded:\n"
+            + "\n".join(
+                f"- {row['subject']}: {row['predicate']} = {row['value']}"
+                for row in facts[:15]
+            )
+        )
+
+    if not sections:
+        return ""
+
+    return (
+        "\n# What you already know\n\n"
+        + "\n\n".join(sections)
+        + "\n\nThis comes from earlier runs and may be out of date. Prefer what\n"
+        "you can observe now -- if a lesson conflicts with what list_files\n"
+        "or read_file actually shows you, trust the observation.\n\n"
+    )
+
+
+def build_prompt(task: str, *, use_memory: bool = True) -> str:
+    """Compose the planner prompt from the template, catalog and memory."""
     template = PROMPT_PATH.read_text(encoding="utf-8")
     # Deliberately not str.format(). The prompt is full of literal braces --
     # JSON examples, and the {{step_N.output}} placeholder syntax itself --
     # and format() would silently eat them, teaching the model a syntax our
     # own parser does not recognise. Plain substitution has no such trap.
-    return template.replace("{catalog}", registry.catalog()).replace("{task}", task)
+    memory = recall(task) if use_memory else ""
+    return (
+        template.replace("{catalog}", registry.catalog())
+        .replace("{memory}", memory)
+        .replace("{task}", task)
+    )
 
 
 def validate_plan(plan: Plan) -> list[str]:

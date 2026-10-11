@@ -33,7 +33,10 @@ def sandbox(tmp_path, monkeypatch):
 
     box = tmp_path / "sandbox"
     box.mkdir()
+    # Patch the workspace map, not SANDBOX_DIR: the file tools resolve
+    # paths through WORKSPACES so they can reach more than one directory.
     monkeypatch.setattr(tools.files, "SANDBOX_DIR", box)
+    monkeypatch.setattr(tools.files, "WORKSPACES", {"sandbox": box})
     return box
 
 

@@ -39,6 +39,19 @@ filing the wrong one; "the Wayne Enterprises invoice is in the ledger"
 is not. If what was asked for turns out not to exist, the correct
 outcome is to report that -- never to use the nearest thing instead.
 
+**2c. When you record data taken from a document, check the values.**
+A postcondition that only asks whether a record exists will pass even if
+every field in it is wrong. If a step writes values that were read out of
+a file, say which values must match what the document said.
+
+    GOOD: "find_invoice returns a record whose vendor, invoice_date and
+           total_amount match the invoice text read in step 2"
+    BAD:  "find_invoice returns the Umbrella Supplies record"
+
+The second one passed while the date was stored as 2026-07-10 for an
+invoice dated 10/07/2026 in US format -- the record existed, so the check
+was satisfied, and a wrong date went into the ledger unnoticed.
+
 **3. Passing data between steps.**
 A step cannot see another step's result unless you say so. To use an
 earlier step's output inside a later step's arguments, write the
@@ -107,6 +120,7 @@ irreversible.
 Each `intent` is one plain-language line: the purpose of the step, not a
 restatement of the tool call.
 
+{memory}
 # The task
 
 {task}

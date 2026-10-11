@@ -33,16 +33,16 @@ class TestSandboxBoundary:
         ],
     )
     def test_traversal_is_refused(self, box, escape):
-        with pytest.raises(FileAccessError, match="outside the sandbox"):
+        with pytest.raises(FileAccessError, match="outside every allowed workspace"):
             read_file(escape)
 
     @pytest.mark.parametrize("absolute", ["C:/Windows/win.ini", "/etc/passwd"])
     def test_absolute_paths_are_refused(self, box, absolute):
-        with pytest.raises(FileAccessError, match="outside the sandbox"):
+        with pytest.raises(FileAccessError, match="outside every allowed workspace"):
             read_file(absolute)
 
     def test_writes_cannot_escape_either(self, box):
-        with pytest.raises(FileAccessError, match="outside the sandbox"):
+        with pytest.raises(FileAccessError, match="outside every allowed workspace"):
             write_file("../escaped.txt", "nope")
 
     def test_resolution_happens_before_the_check(self, box):

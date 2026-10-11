@@ -21,11 +21,12 @@ checkable because the agent can look the record back up.
 
 from __future__ import annotations
 
+import csv
 import sqlite3
 from datetime import datetime
 from typing import Any
 
-from core.config import LEDGER_DB, ensure_dirs
+from core.config import LEDGER_DB, SANDBOX_DIR, ensure_dirs
 from core.schemas import Risk
 from tools.registry import tool
 
@@ -40,6 +41,18 @@ CREATE TABLE IF NOT EXISTS invoices (
     filed_at       TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 """
+
+
+# A human-readable mirror of the ledger, rewritten after every change.
+# SQLite is the real store -- it enforces the unique invoice numbers and
+# the date format that make the agent's work checkable -- but a binary
+# file cannot be shown to anyone. This mirror opens in Excel, so "here is
+# the system before, here it is after" needs no special software.
+#
+# One-way on purpose: the agent never reads it, and editing it changes
+# nothing. A second writable copy of the same data is how two sources of
+# truth start disagreeing.
+LEDGER_CSV = SANDBOX_DIR / "ledger_view.csv"
 
 
 class LedgerError(RuntimeError):
@@ -120,10 +133,33 @@ def add_invoice(
                 f"Invoice {invoice_number!r} is already in the ledger: {existing}"
             ) from exc
 
+    _export_csv()
+
     return (
         f"Filed invoice {invoice_number} from {vendor}: "
         f"{currency.upper()} {float(total_amount):,.2f} dated {invoice_date}"
     )
+
+
+def _export_csv() -> None:
+    """Rewrite the human-readable mirror. Never fails the write it follows."""
+    try:
+        rows = list_invoices()
+        LEDGER_CSV.parent.mkdir(parents=True, exist_ok=True)
+        with open(LEDGER_CSV, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                ["vendor", "invoice_number", "invoice_date",
+                 "total_amount", "currency", "filed_at"]
+            )
+            for row in rows:
+                writer.writerow([row[c] for c in (
+                    "vendor", "invoice_number", "invoice_date",
+                    "total_amount", "currency", "filed_at")])
+    except Exception:
+        # A failed mirror must not fail a successful filing. The ledger
+        # is the record; this is a convenience.
+        pass
 
 
 @tool(risk=Risk.READ)

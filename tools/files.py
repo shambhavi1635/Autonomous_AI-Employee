@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.config import SANDBOX_DIR
+from core.config import SANDBOX_DIR, WORKSPACES
 from core.schemas import Risk
 from tools.registry import tool
 
@@ -34,6 +34,30 @@ class FileAccessError(RuntimeError):
     """A path was rejected, or a file operation could not be completed."""
 
 
+def _workspaces() -> dict[str, Path]:
+    """Current workspaces, resolved. Read at call time so tests can patch."""
+    return {name: Path(path).resolve() for name, path in WORKSPACES.items()}
+
+
+def _split_workspace(raw_path: str) -> tuple[str, Path, str]:
+    """Work out which workspace a path refers to.
+
+    The first segment names a workspace when it matches one:
+    "work/report.xlsx" means report.xlsx in the workspace called `work`.
+    Anything else is interpreted in `sandbox`, so "invoices/acme.pdf"
+    keeps working and single-workspace setups need no prefix at all.
+    """
+    spaces = _workspaces()
+    cleaned = raw_path.strip().replace("\\", "/").lstrip("/")
+    head, _, rest = cleaned.partition("/")
+
+    if head.lower() in spaces and head.lower() != "sandbox":
+        return head.lower(), spaces[head.lower()], rest
+    if head.lower() == "sandbox":
+        return "sandbox", spaces["sandbox"], rest
+    return "sandbox", spaces["sandbox"], cleaned
+
+
 def _resolve(raw_path: str, *, must_exist: bool) -> Path:
     """Turn an agent-supplied path into a safe absolute path.
 
@@ -41,26 +65,39 @@ def _resolve(raw_path: str, *, must_exist: bool) -> Path:
     from a model that misread a task, or from text inside a document it
     was asked to process. Neither is trustworthy, so:
 
-      - paths are interpreted relative to the sandbox
+      - the path is interpreted inside a named workspace
       - the result is resolved (following '..' and symlinks)
-      - the resolved path must still be inside the sandbox
+      - the resolved path must still be inside that workspace
 
     Resolving *before* checking is what makes this work. A naive check on
     the raw string would pass "notes/../../../Windows/System32/config",
     because the traversal only becomes visible once the path is normalised.
     """
-    sandbox = SANDBOX_DIR.resolve()
-    candidate = Path(raw_path.strip())
+    cleaned = raw_path.strip()
 
-    if candidate.is_absolute():
-        resolved = candidate.resolve()
-    else:
-        resolved = (sandbox / candidate).resolve()
-
-    if not resolved.is_relative_to(sandbox):
+    # Absolute paths are refused outright rather than reinterpreted.
+    # Stripping the leading separator and treating "/etc/passwd" as a
+    # relative path inside a workspace would silently turn a request for
+    # a system file into a request for a file that happens not to exist
+    # -- a confusing answer to a question that deserves a clear "no".
+    if cleaned.startswith(("/", "\\")) or (len(cleaned) > 1 and cleaned[1] == ":"):
+        allowed = ", ".join(sorted(_workspaces()))
         raise FileAccessError(
-            f"Path {raw_path!r} is outside the sandbox and was refused. "
-            f"Tools may only touch files under {sandbox}."
+            f"Path {raw_path!r} is absolute and was refused -- it is outside "
+            f"every allowed workspace. Use a workspace-relative path such as "
+            f"'notes.txt'. Available workspaces: {allowed}."
+        )
+
+    _, root, relative = _split_workspace(cleaned)
+
+    candidate = Path(relative)
+    resolved = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
+
+    if not resolved.is_relative_to(root):
+        allowed = ", ".join(sorted(_workspaces()))
+        raise FileAccessError(
+            f"Path {raw_path!r} is outside every allowed workspace and was "
+            f"refused. Available workspaces: {allowed}."
         )
 
     if must_exist and not resolved.exists():
@@ -70,8 +107,17 @@ def _resolve(raw_path: str, *, must_exist: bool) -> Path:
 
 
 def _display(path: Path) -> str:
-    """Show a path relative to the sandbox, so output stays readable."""
-    return path.relative_to(SANDBOX_DIR.resolve()).as_posix()
+    """Show a path the way the agent should refer back to it.
+
+    The workspace prefix appears only when there is more than one, so a
+    plain setup reads as "notes.txt" rather than "sandbox/notes.txt".
+    """
+    spaces = _workspaces()
+    for name, root in spaces.items():
+        if path.is_relative_to(root):
+            relative = path.relative_to(root).as_posix()
+            return relative if len(spaces) == 1 else f"{name}/{relative}"
+    return path.as_posix()
 
 
 @tool(risk=Risk.READ)
@@ -86,12 +132,11 @@ def list_files(pattern: str = "**/*") -> list[str]:
     # The default is recursive on purpose. With a plain '*', a file the
     # agent had just written into a subfolder would not appear, and the
     # agent would reasonably conclude the write had failed.
-    sandbox = SANDBOX_DIR.resolve()
-    if not sandbox.exists():
-        return []
-    return sorted(
-        _display(p) for p in sandbox.glob(pattern) if p.is_file()
-    )
+    found: list[str] = []
+    for root in _workspaces().values():
+        if root.exists():
+            found.extend(_display(p) for p in root.glob(pattern) if p.is_file())
+    return sorted(found)
 
 
 @tool(risk=Risk.READ)

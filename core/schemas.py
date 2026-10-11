@@ -212,6 +212,16 @@ class StepResult(BaseModel):
 
     ok: bool = Field(description="Did the tool call complete without error?")
 
+    arguments: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "The arguments the tool was actually called with, after "
+            "placeholders were resolved. The plan only holds what was "
+            "*intended*; anything judging what happened needs what was "
+            "*done*."
+        ),
+    )
+
     output: Any = Field(
         default=None, description="Whatever the tool returned, unmodified"
     )

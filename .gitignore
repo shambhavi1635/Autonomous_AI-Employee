@@ -11,6 +11,9 @@ __pycache__/
 # --- Runtime data (regenerated; never committed) ---
 data/
 
+# Office lock files, created while a document is open
+~$*
+
 # --- OS / editor noise ---
 .vscode/
 .idea/
