@@ -19,6 +19,7 @@ a model and nothing about the task.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
@@ -45,6 +46,21 @@ _TRANSIENT_MARKERS = (
     "deadline",
     "timeout",
     "internal error",
+)
+
+# A 429 means two very different things. "You are sending requests too fast"
+# clears in seconds and is worth retrying. "Your quota for this model is
+# exhausted" can take hours, and retrying it just burns time and buries the
+# real message under "failed after 3 attempts".
+#
+# Google distinguishes them for us: the error body carries a retryDelay.
+# If the API says to wait longer than this, we stop immediately and surface
+# the original error, which tells the user what to actually do.
+_MAX_RETRY_DELAY_SECONDS = 30.0
+
+_RETRY_DELAY_PATTERN = re.compile(
+    r"""['"]?retry[_ ]?delay['"]?\s*[:=]\s*['"]?(\d+(?:\.\d+)?)s""",
+    re.IGNORECASE,
 )
 
 
@@ -218,10 +234,32 @@ class LLMClient:
         )
 
 
+def _retry_delay_seconds(exc: Exception) -> float | None:
+    """Extract the server's requested retry delay, if it gave one."""
+    match = _RETRY_DELAY_PATTERN.search(str(exc))
+    return float(match.group(1)) if match else None
+
+
 def _is_transient(exc: Exception) -> bool:
-    """Decide whether an error is worth retrying."""
+    """Decide whether an error is worth retrying.
+
+    Two tests, in order:
+      1. Does it look like a transient failure at all? (429/503/timeout...)
+      2. If the server told us how long to wait, is that wait short enough
+         to be worth sitting through?
+
+    Step 2 is what separates "slow down for a second" from "your daily quota
+    is gone, come back in 16 hours". Both arrive as a 429.
+    """
     blob = f"{type(exc).__name__} {exc}".lower()
-    return any(marker in blob for marker in _TRANSIENT_MARKERS)
+    if not any(marker in blob for marker in _TRANSIENT_MARKERS):
+        return False
+
+    delay = _retry_delay_seconds(exc)
+    if delay is not None and delay > _MAX_RETRY_DELAY_SECONDS:
+        return False
+
+    return True
 
 
 def _strip_code_fence(raw: str) -> str:
