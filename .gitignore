@@ -1,0 +1,18 @@
+# --- Secrets ---
+.env
+
+# --- Python ---
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# --- Runtime data (regenerated; never committed) ---
+data/
+
+# --- OS / editor noise ---
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
