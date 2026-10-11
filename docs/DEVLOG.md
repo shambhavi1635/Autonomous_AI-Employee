@@ -311,3 +311,138 @@ End to end, through the CLI:
 `tools/ledger.py` (a stand-in for the internal system), and the invoice to
 ledger task working end to end. Plus the retry ladder, which problem 11
 showed is the missing piece rather than a nicety.
+
+---
+
+## Phase 2 -- Invoice to ledger, and failing well
+
+**Date:** 2026-10-11
+**Goal:** The first real use case end to end -- find an invoice PDF, read
+it, file it in an internal system, and confirm it is there. Plus the
+failure handling Phase 1 showed was missing.
+**Status:** Working. Invoice to ledger verified on two different invoices,
+including one designed to be hard.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `tools/ledger.py` | SQLite invoice store: `add_invoice`, `find_invoice`, `list_invoices`. |
+| `tools/documents.py` | `read_pdf` -- text extraction only, no interpretation. |
+| `scripts/make_sample_invoices.py` | Four invoice PDFs, deliberately different layouts. |
+| `core/executor.py` | `repair_step()` and `verify_goal()`. |
+| `core/graph.py` | `repair` and `replan` nodes; goal check in `finalise`. |
+| `tests/` | 131 offline tests. |
+
+### Design decisions
+
+| Decision | Choice | Reasoning |
+|---|---|---|
+| Invoice extraction | **No extraction code at all** | The obvious `extract_invoice_fields()` would need a model call inside `tools/` (breaking the rule that tools stay testable without an API key) and would be an invoice-shaped workflow -- the hardcoding this project exists to avoid. `read_pdf` plus placeholder resolution already does it, and the same two steps work for a receipt or a contract. |
+| Sample invoices | Four vendors, four layouts | One shared template would let memorisation pass as extraction. They differ in what the number is called, date format, what the total is called, currency, and structure. Globex carries a subtotal and a GST line directly above the real total, as a trap. |
+| Ledger realism | Real SQLite with constraints | The point of the use case is that the agent's work can be checked by something other than the agent. |
+| Unique invoice numbers | Enforced by the schema | Agents retry. Without it, a retry after a timeout silently creates a second payment record. |
+| `add_invoice` risk | `WRITE`, not `IRREVERSIBLE` | A row can be deleted. In a real system that triggers payment it would be `IRREVERSIBLE` -- a one-word change, which is the point of declarative risk. |
+| Date handling | **Refuse** non-ISO dates | `02/10/2026` is 2 October or 10 February depending on the country. A tool that guessed would file wrong records that look fine. Refusing pushes the decision back to the step that can still see the document. |
+| Where constraints live | In the tool, enforced | Not in the prompt, hoped for. A prompt is a request; a tool is a gate. |
+| Repair vs retry | Repair, not blind retry | Blind retries only help with transient faults. Most agent failures are the agent having been wrong, and repeating the same call repeats the mistake. Tools that explain themselves ("not UTF-8 text -- use read_pdf") make repair possible. |
+| Re-plan scope | Whole plan, from scratch | Splicing a new plan onto half-finished state would leave placeholders pointing at step numbers from a plan that no longer exists. Costs re-doing earlier reads; buys internal consistency. |
+| Re-plan approval | Always back to the human | The agent may change its mind; it may not change what you approved without asking. |
+| Test suite | Entirely offline | A suite needing credentials gets skipped, and one costing money per run gets run less often than it should. Model judgement is checked by hand against the sample invoices; everything that must hold regardless of what the model says is tested. |
+
+### The failure ladder
+
+    step fails -> repair   (fix this step, max 2 attempts)
+               -> replan   (the plan itself is wrong, max 1)
+               -> stop and tell the human
+
+Three safeguards on repair: risk is re-derived from the replacement tool,
+so a repair cannot swap in something dangerous and skip the gate; a repair
+proposing the identical call is rejected; and the repaired step replaces
+the original in the plan, with `message` recording the swap, because a
+plan that silently rewrote itself would undermine approving one.
+
+### Problems encountered
+
+14. **Typed placeholders.** `_stub_placeholders` substituted the string
+    `"placeholder"` when type-checking, which failed `total_amount: float`.
+    So a *correct* plan was rejected, and the repair round then pushed the
+    model to replace the placeholder with a literal it invented -- a
+    hardcoded `0.0` instead of the real total. **Lesson:** a validator that
+    rejects correct input is worse than no validator, because the system
+    works around it in a way that looks like success.
+
+15. **The catalog shows only a docstring's first paragraph -- hit twice.**
+    The "not for PDFs" warning on `read_file` and the ISO-date requirement
+    on `add_invoice` were both in paragraph two, invisible to the planner.
+    **Lesson:** the first line of a tool's docstring *is* the prompt.
+    Anything needed when *choosing* the tool belongs there.
+
+16. **The verification probe hallucinated a filename.** Asked how to check
+    a step without being told what the step had touched, it invented
+    `acme_invoice.pdf`. Same root cause as problem 9: a model asked to
+    decide without the information needed to decide. **Fix:** the probe now
+    sees the real call with its resolved arguments.
+
+17. **The planner copied values out of the task.** Asked to file "the Acme
+    invoice", it hardcoded `vendor="Acme"` instead of reading the vendor
+    from the document, filing `Acme` where the invoice said
+    `ACME CORPORATION`. **Fix:** prompt rule 3b -- words in the task
+    identify *which* thing to find; they are not the data.
+
+18. **Right steps, wrong thing -- the most serious failure so far.**
+    Asked to file the **Wayne Enterprises** invoice, which does not exist,
+    the agent listed the folder, read `acme.pdf`, filed ACME CORPORATION,
+    and reported *"All 3 steps completed and verified."* Every step was
+    honest. Every postcondition held. The postconditions asked whether *an*
+    invoice had been filed, not whether *that* one had.
+
+    No per-step check can catch this, because no step is wrong. The hole
+    was structural: the original design called for three levels of
+    verification and only two had been built.
+
+    **Fix:** `verify_goal()` -- a final check comparing the original
+    request against the whole trace, run in `finalise` after every step has
+    already passed. It is told explicitly that "could not find what was
+    asked for" is a legitimate outcome and substituting the nearest
+    available thing is not. Plus prompt rule 2b: when a request names a
+    vendor, file or record, the postcondition must name it too.
+
+    **Lesson:** this is the failure that matters in a business setting --
+    not crashing, but confidently doing the wrong thing. Verification has
+    to reach all the way up to the request, or it verifies the agent's
+    interpretation rather than the user's intent.
+
+### Verification
+
+- **Acme invoice** -- filed correctly: number, date, amount, currency.
+- **Globex invoice** -- the hard one. Correct vendor, number and currency,
+  and it picked 98,400.00 as the total rather than the 83,389.83 subtotal
+  or the 15,010.17 GST line sitting above it.
+- **Repair ladder, in a real run** -- `attempts: {'3': 2}`. Step 3 was
+  rejected for a non-ISO date, the agent read its own error, converted
+  `02/10/2026` to `2026-10-02`, retried, and passed. No human involved.
+- **Repair, isolated** -- `read_file` on a PDF -> error -> repaired to
+  `read_pdf` with the same path -> retry succeeded.
+- **Tests** -- 131 passing in under 5 seconds, no API key required.
+
+### Known gaps
+
+- **`verify_goal` has not yet been confirmed against the Wayne case in a
+  live run.** Two attempts were lost to Google-side 503s. The fix is
+  written and the unit tests pass, but the end-to-end proof is owed.
+- **The re-plan rung is unproven live** for the same reason. Its routing
+  is covered by offline tests.
+- **No LLM response cache.** Most quota today went on re-running the same
+  task while fixing bugs, which also made failures hard to reproduce --
+  the line-2-vs-line-3 bug disappeared on re-run. A record/replay cache in
+  `_call()` would make development cheaper and debugging deterministic.
+- **No wall-clock timeout, no loop detection.**
+- Three packages in `requirements.txt` are still not installed.
+
+### Next
+
+**Phase 3 -- the UI.** Streamlit: the plan as an editable table, a live
+execution feed, a stop button, run history. The graph needs no changes --
+`app_cli.py` was kept free of agent logic precisely so a second front end
+could drive the same machine.

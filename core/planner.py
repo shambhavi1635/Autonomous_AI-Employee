@@ -100,8 +100,19 @@ def validate_plan(plan: Plan) -> list[str]:
     return problems
 
 
-def make_plan(task: str, *, client: LLMClient | None = None) -> Plan:
-    """Produce a validated Plan for a task, or raise PlanningError."""
+def make_plan(
+    task: str,
+    *,
+    prior_failure: str | None = None,
+    client: LLMClient | None = None,
+) -> Plan:
+    """Produce a validated Plan for a task, or raise PlanningError.
+
+    `prior_failure` is set when an earlier plan for this same task failed
+    and the agent is thinking again. Passing it is what distinguishes a
+    second plan from a repeat of the first: without it the model has no
+    reason not to propose exactly the approach that already did not work.
+    """
     if not task.strip():
         raise PlanningError("Task is empty.")
     if not registry.all_tools():
@@ -113,6 +124,17 @@ def make_plan(task: str, *, client: LLMClient | None = None) -> Plan:
     client = client or LLMClient()
     prompt = build_prompt(task)
     system = "You are a careful planner. Follow the rules exactly."
+
+    if prior_failure:
+        prompt += (
+            "\n\n# An earlier attempt at this task failed\n\n"
+            f"{prior_failure}\n\n"
+            "Plan a different approach. Do not repeat the step that "
+            "failed in the same form -- if a tool, path or assumption was "
+            "wrong, change it. If the task cannot be done with the tools "
+            "available, say so plainly in `reasoning` rather than "
+            "producing a plan you expect to fail again.\n"
+        )
 
     attempt = 0
     while True:

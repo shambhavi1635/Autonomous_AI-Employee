@@ -126,6 +126,81 @@ Rules:
 """
 
 
+_GOAL_PROMPT = """\
+Every step of a plan reported success. Decide whether the user actually
+got what they asked for.
+
+What the user asked for:
+    {task}
+
+What was done, with the evidence observed after each step:
+{trace}
+
+Steps can all succeed while the wrong thing is done. Answer false if:
+
+- the work acted on a different file, record, vendor or entity than the
+  one the request names;
+- the request named something that does not exist, and instead of saying
+  so, something similar was used in its place;
+- part of the request was quietly dropped.
+
+Being unable to find what was asked for is a legitimate outcome and
+should be reported as one. Substituting the nearest available thing is
+not, however well the individual steps went.
+"""
+
+
+class GoalVerdict(BaseModel):
+    fulfilled: bool = Field(description="Did the user get what they asked for?")
+    explanation: str = Field(
+        description="One or two sentences. If not fulfilled, say what was "
+        "asked for and what was actually done instead."
+    )
+
+
+def verify_goal(
+    task: str,
+    results: list[dict[str, Any]],
+    *,
+    client: LLMClient,
+) -> GoalVerdict:
+    """Check the whole run against the original request.
+
+    The third level of verification, and the one that is easy to skip.
+
+      1. did the tool call return?           -- `ok`
+      2. did each postcondition hold?        -- `verified`
+      3. did the user get what they asked for?  -- here
+
+    Levels 1 and 2 are per step, and a plan can pass both while missing
+    the point entirely. Asked for the Wayne Enterprises invoice, an agent
+    listed the folder, read the only invoice it found, filed ACME, and
+    every step verified -- because each postcondition asked whether *an*
+    invoice had been filed, not whether *that* one had.
+
+    No step can catch this, because no step is wrong. Only something
+    looking at the request and the whole trace together can.
+    """
+    trace = "\n".join(
+        f"  step {r['step_id']}: {r.get('evidence') or r.get('error') or 'no evidence'}"
+        for r in results
+    ) or "  (nothing ran)"
+
+    try:
+        return client.generate_structured(
+            _GOAL_PROMPT.format(task=task, trace=trace),
+            GoalVerdict,
+            model=config.FAST_MODEL,
+        )
+    except LLMError as exc:
+        # Unable to check is not the same as checked and fine. Say so
+        # rather than reporting a success nobody confirmed.
+        return GoalVerdict(
+            fulfilled=False,
+            explanation=f"Could not check the result against the request: {exc}",
+        )
+
+
 class RepairedStep(BaseModel):
     tool: str = Field(description="Tool to use this time")
     arguments_json: str = Field(description="Its arguments, as a JSON object string")

@@ -32,6 +32,13 @@ something one of the READ tools can observe.
 If you cannot state a checkable postcondition for a step, the step is
 probably doing too much. Split it.
 
+**2b. Name the specific thing the task asked for.**
+When the request names a vendor, file, person or record, the
+postcondition must mention it. "an invoice was filed" is satisfied by
+filing the wrong one; "the Wayne Enterprises invoice is in the ledger"
+is not. If what was asked for turns out not to exist, the correct
+outcome is to report that -- never to use the nearest thing instead.
+
 **3. Passing data between steps.**
 A step cannot see another step's result unless you say so. To use an
 earlier step's output inside a later step's arguments, write the

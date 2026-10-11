@@ -51,6 +51,7 @@ from core.executor import (
     resolve_arguments,
     run_tool,
     verify,
+    verify_goal,
 )
 from core.planner import PlanningError, make_plan, render
 from core.schemas import Plan, StepResult
@@ -67,6 +68,7 @@ class AgentState(TypedDict, total=False):
     outputs: dict[str, Any]          # step id (as str) -> that step's output
     results: list[dict[str, Any]]    # StepResult dicts, in order
     attempts: dict[str, int]         # step id (as str) -> tries so far
+    replans: int                     # how many times the plan was redone
     status: Literal[
         "planning", "awaiting_approval", "running", "done", "failed", "rejected"
     ]
@@ -86,6 +88,7 @@ def plan_node(state: AgentState) -> AgentState:
         "outputs": {},
         "results": [],
         "attempts": {},
+        "replans": 0,
         "status": "awaiting_approval",
         "message": "",
     }
@@ -239,6 +242,46 @@ def repair_node(state: AgentState) -> AgentState:
     }
 
 
+def replan_node(state: AgentState) -> AgentState:
+    """Throw the plan away and think again, knowing what went wrong.
+
+    The rung above repair. Repair fixes one step in place and assumes the
+    rest of the plan is sound; re-planning is for when that assumption is
+    the problem -- the agent read the wrong file, or the whole approach
+    does not fit what it found.
+
+    The run restarts from scratch rather than continuing from the failed
+    step. That costs re-doing the earlier reads, and it buys a plan whose
+    step numbering and placeholders are internally consistent. Splicing a
+    new plan onto half-finished state would leave placeholders pointing at
+    step numbers from a plan that no longer exists.
+
+    And the new plan goes back through the approval gate. The agent is
+    allowed to change its mind; it is not allowed to change what you
+    approved without asking.
+    """
+    failure = state.get("message") or "The previous plan failed."
+
+    try:
+        plan = make_plan(state["task"], prior_failure=failure)
+    except PlanningError as exc:
+        return {
+            "status": "failed",
+            "message": f"{failure}\nCould not find another approach: {exc}",
+        }
+
+    return {
+        "plan": plan.model_dump(mode="json"),
+        "cursor": 0,
+        "outputs": {},
+        "results": [],
+        "attempts": {},
+        "replans": state.get("replans", 0) + 1,
+        "status": "awaiting_approval",
+        "message": f"First attempt failed: {failure}  A new plan is proposed.",
+    }
+
+
 def after_approval(state: AgentState) -> str:
     """Leave the approval gate: either start executing, or stop."""
     return "step" if state.get("status") == "running" else END
@@ -269,7 +312,13 @@ def after_step(state: AgentState) -> str:
         succeeded = last.get("ok") and last.get("verified")
         if not succeeded and not skipped:
             attempts = state.get("attempts", {}).get(str(last["step_id"]), 1)
-            return "repair" if attempts < config.MAX_STEP_ATTEMPTS else END
+            if attempts < config.MAX_STEP_ATTEMPTS:
+                return "repair"
+            # Repair is exhausted: this step cannot be fixed in place. The
+            # next rung assumes the plan itself is wrong, not just the step.
+            if state.get("replans", 0) < config.MAX_REPLANS:
+                return "replan"
+            return END
 
     if state["cursor"] >= len(plan.steps):
         return END
@@ -297,9 +346,24 @@ def finalise(state: AgentState) -> AgentState:
             ),
         }
 
+    # Every step passed. That is necessary and not sufficient: a plan can
+    # execute perfectly and still not be what was asked for. This last
+    # check looks at the request and the whole trace together, which is
+    # the only vantage point from which "right steps, wrong thing" is
+    # visible.
+    goal = verify_goal(state["task"], results, client=LLMClient())
+    if not goal.fulfilled:
+        return {
+            "status": "failed",
+            "message": (
+                f"All {len(results)} steps ran and verified, but the task "
+                f"was not fulfilled: {goal.explanation}"
+            ),
+        }
+
     return {
         "status": "done",
-        "message": f"All {len(results)} steps completed and verified.",
+        "message": f"All {len(results)} steps completed and verified. {goal.explanation}",
     }
 
 
@@ -311,6 +375,7 @@ def build_graph(checkpointer: SqliteSaver):
     builder.add_node("approve", approval_node)
     builder.add_node("step", step_node)
     builder.add_node("repair", repair_node)
+    builder.add_node("replan", replan_node)
     builder.add_node("finalise", finalise)
 
     builder.add_edge(START, "plan")
@@ -319,7 +384,15 @@ def build_graph(checkpointer: SqliteSaver):
         "approve", after_approval, {"step": "step", END: "finalise"}
     )
     builder.add_conditional_edges(
-        "step", after_step, {"step": "step", "repair": "repair", END: "finalise"}
+        "step",
+        after_step,
+        {"step": "step", "repair": "repair", "replan": "replan", END: "finalise"},
+    )
+    # A new plan must be approved like any other, so re-planning routes
+    # back through the gate rather than straight into execution.
+    builder.add_conditional_edges(
+        "replan", lambda s: END if s.get("status") == "failed" else "approve",
+        {"approve": "approve", END: "finalise"},
     )
     # Repair rewinds the cursor and sends the step back round.
     builder.add_conditional_edges(

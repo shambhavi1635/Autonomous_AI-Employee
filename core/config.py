@@ -64,6 +64,12 @@ MAX_STEPS = int(os.getenv("MAX_STEPS", "25"))
 # shown its own error usually needs a different plan, not another go.
 MAX_STEP_ATTEMPTS = int(os.getenv("MAX_STEP_ATTEMPTS", "2"))
 
+# How many times a run may throw away its plan and think again. 1, because
+# the second plan is written knowing what went wrong; a third would mostly
+# be the model circling. Every re-plan goes back to the human for approval,
+# so this is also a limit on how often the agent may interrupt you.
+MAX_REPLANS = int(os.getenv("MAX_REPLANS", "1"))
+
 
 def ensure_dirs() -> None:
     """Create runtime directories. data/ is gitignored, so on a fresh
