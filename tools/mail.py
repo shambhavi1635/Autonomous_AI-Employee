@@ -29,6 +29,7 @@ from email.header import decode_header, make_header
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 
+from core import config  # noqa: F401  -- importing loads .env
 from core.schemas import Risk
 from tools.registry import tool
 
@@ -54,6 +55,34 @@ _SETUP_HELP = (
 
 class MailError(RuntimeError):
     """Gmail could not be reached, or a message could not be handled."""
+
+
+def _is_configured() -> bool:
+    return bool(
+        os.getenv("GMAIL_ADDRESS", "").strip()
+        and os.getenv("GMAIL_APP_PASSWORD", "").strip()
+    )
+
+
+def _mail_tool(risk: Risk):
+    """Register a mail tool only when Gmail is actually set up.
+
+    A registry should describe what the agent can really do. Registered
+    unconditionally, these tools appear in the catalog on a machine with
+    no credentials -- so the planner plans them and, worse, the verifier
+    picks one as a probe. That happened: a browser-composed email was
+    verified correctly at every step, and then `find_sent` was chosen to
+    check the last one, could not connect, and failed a step whose work
+    had succeeded.
+
+    An unusable tool in the catalog is not a missing feature, it is a
+    false promise, and the verifier believes it.
+    """
+
+    def decorator(fn):
+        return tool(risk=risk)(fn) if _is_configured() else fn
+
+    return decorator
 
 
 def _credentials() -> tuple[str, str]:
@@ -139,7 +168,7 @@ def _fetch(connection, folder: str, criteria: str, limit: int) -> list[dict]:
     return messages
 
 
-@tool(risk=Risk.READ)
+@_mail_tool(Risk.READ)
 def search_inbox(query: str = "", limit: int = 5) -> str:
     """Search the Gmail inbox and return matching messages, newest first.
 
@@ -175,7 +204,7 @@ def search_inbox(query: str = "", limit: int = 5) -> str:
     return f"{len(blocks)} message(s):\n\n" + "\n\n---\n\n".join(blocks)
 
 
-@tool(risk=Risk.WRITE)
+@_mail_tool(Risk.WRITE)
 def save_draft(to: str, subject: str, body: str) -> str:
     """Save an email as a Gmail draft without sending it.
 
@@ -212,7 +241,7 @@ def save_draft(to: str, subject: str, body: str) -> str:
     )
 
 
-@tool(risk=Risk.IRREVERSIBLE)
+@_mail_tool(Risk.IRREVERSIBLE)
 def send_email(to: str, subject: str, body: str) -> str:
     """Send an email. This cannot be undone, so it always needs approval first.
 
@@ -249,7 +278,7 @@ def send_email(to: str, subject: str, body: str) -> str:
     )
 
 
-@tool(risk=Risk.READ)
+@_mail_tool(Risk.READ)
 def find_sent(subject: str, limit: int = 5) -> str:
     """Check the Gmail Sent folder for a message with this subject.
 

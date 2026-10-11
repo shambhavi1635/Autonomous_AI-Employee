@@ -114,6 +114,12 @@ def _call(job):
     global _worker
 
     if _worker is None or not _worker.is_alive():
+        # Reset the recorded failure as well as the event. Without this
+        # a single bad start is permanent: the profile lock clears, the
+        # browser would launch perfectly well, and every later call
+        # still fails with the stale error.
+        global _startup_error
+        _startup_error = None
         _started.clear()
         _worker = threading.Thread(target=_worker_loop, daemon=True,
                                    name="browser")
@@ -176,8 +182,25 @@ def _launch():
 
 
 def _page():
-    """The active page. Only valid on the browser thread."""
-    return _context.pages[0] if _context.pages else _context.new_page()
+    """The active page. Only valid on the browser thread.
+
+    Spare blank tabs are closed on the way. Chromium opens one with the
+    profile, and some pages open another, so without this the window
+    accumulates about:blank tabs across a run and the user has to work
+    out which one the agent is actually using.
+    """
+    if not _context.pages:
+        return _context.new_page()
+
+    real = [p for p in _context.pages if p.url not in ("about:blank", "")]
+    for spare in _context.pages:
+        if spare.url in ("about:blank", "") and real:
+            try:
+                spare.close()
+            except Exception:
+                pass
+
+    return real[0] if real else _context.pages[0]
 
 
 def _is_consequential(target: str) -> str | None:
@@ -342,12 +365,15 @@ def browser_click_confirmed(target: str) -> str:
 
 @tool(risk=Risk.WRITE)
 def gmail_compose(to: str, subject: str, body: str) -> str:
-    """Open Gmail with a new message already filled in, ready to review. Does not send.
+    """Open Gmail with a new message filled in for a person to review and send. Never sends.
 
     Opens the real Gmail compose window on screen with the recipient,
-    subject and body prepared. Nothing is sent -- the message sits there
-    for a person to read. Sending afterwards needs
-    browser_click_confirmed('Send'), which asks for approval first.
+    subject and body prepared, then stops. The person reads it, edits
+    anything they want and clicks Send themselves.
+
+    This is the last step of an email task. Do not follow it with a
+    click on Send, and do not close the browser afterwards -- the open
+    window is the thing the person was asked to look at.
     """
     if not re.fullmatch(r"[^@\s,;]+@[^@\s,;]+\.[A-Za-z]{2,}", to.strip()):
         raise BrowserError(
@@ -382,8 +408,9 @@ def gmail_compose(to: str, subject: str, body: str) -> str:
 
     return (
         f"Composed a message to {to.strip()} with subject {subject.strip()!r} "
-        f"({len(body.split())} words). It is open in Gmail and has NOT been "
-        "sent."
+        f"({len(body.split())} words). It is open in Gmail for the person to "
+        "read, edit and send. It has NOT been sent, and the agent must not "
+        "send it."
     )
 
 
@@ -401,3 +428,21 @@ def close_browser() -> None:
     _worker = None
     _context = _playwright = None
     _started.clear()
+
+
+@tool(risk=Risk.WRITE)
+def browser_close() -> str:
+    """Close the agent's browser window. Use this once a browser task is finished.
+
+    Only close it after the work is done. If the task was to prepare
+    something for a person to read -- a drafted email, a form filled in
+    for review -- leave the window open; closing it would take away the
+    thing they were asked to look at.
+
+    Signed-in sessions survive: they are saved to the browser's profile
+    as it closes, so the next run is still logged in.
+    """
+    if _worker is None or not _worker.is_alive():
+        return "The browser was not open."
+    close_browser()
+    return "Closed the browser window. Signed-in sessions are kept for next time."

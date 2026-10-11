@@ -69,6 +69,26 @@ file edits it in place rather than copying it.
     GOOD: excel_update(path="sales.xlsx", ...)      <- editing, stays put
     BAD:  word_write(path="q3-summary.docx", ...)   <- lands in the inputs
 
+**2f. Tidy up after a browser task -- but only when it is finished.**
+If the plan itself completes the work in the browser (it clicks Send,
+submits the form), end with `browser_close`. If the plan prepares
+something for a person to read or send themselves, leave the window
+open: closing it would take away the thing they were asked to look at.
+
+    sends the email itself     -> ... browser_click_confirmed("Send"), browser_close
+    leaves a draft for review  -> ... gmail_compose, report   (no close)
+
+**2g. The agent composes an email. The person sends it.**
+Email always ends at `gmail_compose`. Never click Send, and never close
+the browser on an email task, even when the request says "send it" --
+that means "get it ready to go", and the person decides whether it
+actually leaves. A message to a real recipient cannot be recalled, and
+a plan approved a minute earlier is not consent to send this particular
+wording.
+
+    GOOD: read_file, gmail_compose, report
+    BAD:  read_file, gmail_compose, browser_click_confirmed("Send")
+
 **3. Passing data between steps.**
 A step cannot see another step's result unless you say so. To use an
 earlier step's output inside a later step's arguments, write the
