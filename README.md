@@ -42,3 +42,28 @@
                    │  6. REFLECTOR ─► writes to    │
                    │  MEMORY (episode + lessons)   │
                    └───────────────────────────────┘
+
+
+
+
+
+
+                            plan ──► await_plan_approval ──┬─► [rejected] ──► END
+                   (interrupt)          └─► [approved]
+                                             │
+                      ┌──────────────────────▼───────┐
+                      │  execute_step                │
+                      │   └ risk=IRREVERSIBLE? ──► await_action_approval
+                      │                               (interrupt)
+                      ├──────────────────────────────┤
+                      │  verify_step                 │
+                      └──────────┬───────────────────┘
+                                 │  conditional edge
+              ┌──────────────────┼──────────────────┐
+         [pass, more steps] [pass, done]        [fail]
+              │                  │                  │
+         execute_step      final_verify       handle_failure
+                                 │              (retry / replan
+                              reflect            / escalate)
+                                 │
+                                END
