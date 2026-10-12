@@ -11,6 +11,18 @@
 </head>
 <body>
 
+<!-- The moving background: three blurred shapes drifting behind the
+     content, over a grid. Separate elements rather than animated
+     gradients on <body>, because a browser can move a transformed layer
+     on the compositor without repainting, where shifting a gradient's
+     position repaints the whole page every frame. -->
+<div class="ambient" aria-hidden="true">
+  <span class="orb orb-1"></span>
+  <span class="orb orb-2"></span>
+  <span class="orb orb-3"></span>
+  <span class="grid"></span>
+</div>
+
 <button id="sidebar-toggle" title="Previous runs" aria-label="Previous runs">
   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
        stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/>

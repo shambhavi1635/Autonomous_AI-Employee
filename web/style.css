@@ -42,19 +42,131 @@ body {
     -webkit-font-smoothing: antialiased;
 }
 
-/* The centre glow. Two soft radial washes rather than one, so the
- * falloff is not a visible ellipse on a large screen. Fixed, so it
- * stays put while content scrolls past it. */
-body::before {
+/* ---------------------------------------------------- the background
+ *
+ * Three large blurred shapes drifting slowly behind everything, a fine
+ * grain over the top, and a vignette at the edges. The movement is what
+ * keeps a dark page from looking like a dead screenshot.
+ *
+ * Only `transform` and `opacity` are animated. Those two the browser can
+ * hand to the compositor and move without repainting; animating a
+ * gradient's position or a filter instead repaints the whole surface
+ * every frame, which on a page that also streams live updates is the
+ * difference between smooth and visibly stuttering.
+ */
+.ambient {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 0;
+}
+
+.orb {
+    position: absolute;
+    border-radius: 50%;
+    /* Blurred far past their own size, so what shows is a soft wash of
+     * colour rather than three circles. */
+    filter: blur(100px);
+    will-change: transform;
+}
+
+.orb-1 {
+    width: 46vw; height: 46vw;
+    top: -12vw; left: 18vw;
+    background: radial-gradient(circle, rgba(245, 197, 24, 0.30), transparent 66%);
+    animation: drift-1 34s ease-in-out infinite;
+}
+.orb-2 {
+    width: 38vw; height: 38vw;
+    top: 22vh; right: -8vw;
+    background: radial-gradient(circle, rgba(226, 142, 32, 0.22), transparent 66%);
+    animation: drift-2 44s ease-in-out infinite;
+}
+.orb-3 {
+    width: 52vw; height: 52vw;
+    bottom: -24vw; left: -10vw;
+    background: radial-gradient(circle, rgba(78, 70, 165, 0.28), transparent 68%);
+    animation: drift-3 52s ease-in-out infinite;
+}
+
+/* Long, prime-ish durations that do not divide into each other, so the
+ * three never fall back into the same arrangement and the background
+ * does not visibly loop. */
+@keyframes drift-1 {
+    0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+    33%      { transform: translate3d(7vw, 5vh, 0) scale(1.14); }
+    66%      { transform: translate3d(-5vw, 9vh, 0) scale(0.92); }
+}
+@keyframes drift-2 {
+    0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+    40%      { transform: translate3d(-9vw, -6vh, 0) scale(1.2); }
+    75%      { transform: translate3d(-3vw, 8vh, 0) scale(0.9); }
+}
+@keyframes drift-3 {
+    0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+    50%      { transform: translate3d(11vw, -7vh, 0) scale(1.1); }
+}
+
+/* A grid, drawn as two sets of hairlines. Cheaper than a tiled image
+ * and it stays crisp at any zoom.
+ *
+ * Masked to fade out towards the edges, so it reads as structure under
+ * the content rather than graph paper stretched over the whole window.
+ * It drifts by exactly one cell and repeats, which is why the loop is
+ * invisible -- the pattern after the animation is identical to the
+ * pattern before it. */
+.grid {
+    position: absolute;
+    inset: -80px;
+    background-image:
+        linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+    background-size: 58px 58px;
+    -webkit-mask-image: radial-gradient(ellipse 72% 62% at 50% 42%,
+                        #000 25%, transparent 78%);
+    mask-image: radial-gradient(ellipse 72% 62% at 50% 42%,
+                #000 25%, transparent 78%);
+    animation: grid-drift 26s linear infinite;
+    will-change: transform;
+}
+
+/* Brighter squares picked out here and there, so the grid has some
+ * depth rather than being a flat mesh. */
+.grid::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+        linear-gradient(rgba(245, 197, 24, 0.055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(245, 197, 24, 0.055) 1px, transparent 1px);
+    background-size: 232px 232px;
+}
+
+@keyframes grid-drift {
+    from { transform: translate3d(0, 0, 0); }
+    to   { transform: translate3d(58px, 58px, 0); }
+}
+
+/* A vignette, so the content sits in a pool of light rather than on a
+ * flat field. */
+body::after {
     content: "";
     position: fixed;
     inset: 0;
-    background:
-        radial-gradient(ellipse 70% 50% at 50% 28%, rgba(245, 197, 24, 0.09), transparent 70%),
-        radial-gradient(ellipse 100% 70% at 50% 0%, rgba(120, 90, 20, 0.07), transparent 65%),
-        radial-gradient(circle at 50% 110%, rgba(40, 40, 70, 0.22), transparent 60%);
+    background: radial-gradient(ellipse 85% 65% at 50% 38%,
+                transparent 46%, rgba(0, 0, 0, 0.46) 100%);
     pointer-events: none;
     z-index: 0;
+}
+
+/* Someone who has asked their system for less motion gets the same
+ * palette, holding still. */
+@media (prefers-reduced-motion: reduce) {
+    .orb, .grid { animation: none; }
+    .hero h1 { animation: none; background-position: 30% 50%; }
+    .panel, .composer, .feed-line { animation: none; }
+    .panel:has(.spinner) .panel-head::after { animation: none; }
 }
 
 /* ----------------------------------------------------------- sidebar */
@@ -150,9 +262,33 @@ main {
     font-size: clamp(38px, 6.5vw, 62px);
     font-weight: 700;
     letter-spacing: -0.025em;
-    color: var(--accent);
-    text-shadow: 0 0 46px rgba(245, 197, 24, 0.3);
     margin-bottom: 14px;
+
+    /* A sheen moving across the letters rather than flat fill. The
+     * gradient is wider than the text and slides, which reads as light
+     * passing over metal -- enough to make the page feel alive without
+     * anything blinking at the reader. */
+    background: linear-gradient(100deg,
+        #c9a20f 0%, var(--accent) 28%, #fff3b8 42%,
+        var(--accent) 56%, #c9a20f 100%);
+    background-size: 280% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: sheen 9s ease-in-out infinite;
+    filter: drop-shadow(0 0 34px rgba(245, 197, 24, 0.28));
+}
+
+@keyframes sheen {
+    0%, 100% { background-position: 0% 50%; }
+    50%      { background-position: 100% 50%; }
+}
+
+.hero p { animation: fade-up 0.7s 0.1s ease both; }
+.hero h1 { animation: sheen 9s ease-in-out infinite, fade-up 0.6s ease both; }
+
+@keyframes fade-up {
+    from { opacity: 0; transform: translateY(12px); }
 }
 .hero p {
     font-size: 13px;
@@ -163,15 +299,22 @@ main {
 
 /* --------------------------------------------------------- composer */
 .composer {
-    background: var(--bg-raised);
+    /* Slightly transparent over the moving background, so the drift
+     * shows faintly through the panel instead of stopping dead at its
+     * edge. */
+    background: rgba(14, 14, 19, 0.82);
+    backdrop-filter: blur(18px);
     border: 1px solid var(--border-bright);
     border-radius: var(--radius);
     padding: 6px;
-    transition: border-color 0.18s, box-shadow 0.18s;
+    transition: border-color 0.2s, box-shadow 0.3s, transform 0.2s;
+    animation: fade-up 0.6s 0.05s ease both;
 }
+.composer:hover { border-color: #33333f; }
 .composer:focus-within {
     border-color: var(--accent-dim);
-    box-shadow: 0 0 0 4px var(--accent-glow);
+    box-shadow: 0 0 0 4px var(--accent-glow), 0 18px 50px rgba(0, 0, 0, 0.45);
+    transform: translateY(-1px);
 }
 
 #task {
@@ -211,11 +354,17 @@ button {
     transition: background 0.15s, color 0.15s, border-color 0.15s, opacity 0.15s;
 }
 .btn-primary {
-    background: var(--accent);
+    background: linear-gradient(180deg, #ffd634, var(--accent));
     color: #121208;
-    box-shadow: 0 0 22px rgba(245, 197, 24, 0.22);
+    box-shadow: 0 0 22px rgba(245, 197, 24, 0.22),
+                inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
-.btn-primary:hover:not(:disabled) { background: #ffd634; }
+.btn-primary:hover:not(:disabled) {
+    box-shadow: 0 0 34px rgba(245, 197, 24, 0.42),
+                inset 0 1px 0 rgba(255, 255, 255, 0.45);
+    transform: translateY(-1px);
+}
+.btn-primary:active:not(:disabled) { transform: translateY(0); }
 .btn-ghost {
     background: transparent; color: var(--text-soft);
     border-color: var(--border-bright);
@@ -237,12 +386,14 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ----------------------------------------------------------- panels */
 .panel {
-    background: var(--bg-raised);
+    background: rgba(14, 14, 19, 0.84);
+    backdrop-filter: blur(18px);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     margin-top: 22px;
     overflow: hidden;
-    animation: rise 0.3s ease both;
+    animation: rise 0.34s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+    box-shadow: 0 14px 44px rgba(0, 0, 0, 0.32);
 }
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } }
 
@@ -305,6 +456,25 @@ td.num { color: var(--text-faint); width: 28px; font-variant-numeric: tabular-nu
 .feed-mark.note { color: var(--text-faint); }
 .feed-body { flex: 1; min-width: 0; }
 .feed-body .detail { font-size: 12px; color: var(--text-faint); margin-top: 3px; line-height: 1.6; }
+
+/* A bar travelling along the top edge of the running panel. A spinner
+ * says "busy"; this says "still going", which is the useful thing when
+ * a step can take thirty seconds. */
+.panel:has(.spinner) .panel-head {
+    position: relative;
+    overflow: hidden;
+}
+.panel:has(.spinner) .panel-head::after {
+    content: "";
+    position: absolute;
+    left: 0; bottom: 0; height: 2px; width: 38%;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    animation: sweep 1.9s ease-in-out infinite;
+}
+@keyframes sweep {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(360%); }
+}
 
 .spinner {
     width: 13px; height: 13px; border-radius: 50%;
