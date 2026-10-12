@@ -43,7 +43,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from core.config import PROJECT_ROOT
+from core.config import INBOX_DIR, OUTPUTS_DIR, PROJECT_ROOT, SANDBOX_DIR
 from core.schemas import Risk
 from tools.registry import tool
 
@@ -113,19 +113,39 @@ def _report(result: subprocess.CompletedProcess, label: str) -> str:
     return "\n".join(parts)
 
 
+# Given to every script, so a path like outputs/x.csv can be written
+# correctly. Without it a script resolves relative paths against the
+# project folder, and "outputs/report.csv" quietly creates a new folder
+# inside the source tree instead of writing to the one on the Desktop --
+# the file is produced, the run reports success, and the user finds
+# nothing where they expected it.
+_PREAMBLE = f"""from pathlib import Path as _P
+OUTPUTS = _P(r"{OUTPUTS_DIR}")
+INBOX   = _P(r"{INBOX_DIR}")
+SANDBOX = _P(r"{SANDBOX_DIR}")
+"""
+
+
 @tool(risk=Risk.IRREVERSIBLE)
 def run_python(code: str) -> str:
     """Run Python code. A LAST RESORT -- use a dedicated tool whenever one exists.
 
     This can do anything on the machine, so it always needs human
     approval and the person sees the exact code first. Reach for it only
-    when no other tool can do the job: use excel_update for
-    spreadsheets, write_file for files, add_invoice for the ledger, and
-    the browser or desktop tools for applications.
+    when no other tool can do the job: use write_file to save a file,
+    excel_update for spreadsheets, add_invoice for the ledger, and the
+    browser or desktop tools for applications.
+
+    Workspace names do NOT work here -- "outputs/report.csv" is just a
+    relative path and lands inside the project. Three variables are
+    provided instead, already pointing at the real folders:
+
+        OUTPUTS / "report.csv"      where results belong
+        INBOX   / "data.csv"        what the user put in
+        SANDBOX / "notes.txt"       the project's own files
 
     Print what you want to see -- stdout is returned. The code runs in
-    its own process with the project folder as the working directory,
-    and is stopped after two minutes.
+    its own process and is stopped after two minutes.
     """
     if not code.strip():
         raise ShellError("No code given.")
@@ -134,7 +154,7 @@ def run_python(code: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".py", delete=False, encoding="utf-8"
     ) as handle:
-        handle.write(code)
+        handle.write(_PREAMBLE + code)
         script = handle.name
 
     try:

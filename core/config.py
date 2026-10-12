@@ -53,6 +53,19 @@ OUTPUTS_DIR = Path(
     os.getenv("OUTPUTS_DIR", "").strip() or _desktop() / "AI_colleage_outputs"
 ).expanduser()
 
+# Where you put things for the agent to work on. The pair to the outputs
+# folder: one for what you hand it, one for what it produces, both on the
+# Desktop where you can see them.
+#
+# A nominated folder rather than the whole Desktop. Nothing technical
+# stops the agent being given everything -- it is one line -- but
+# write_file overwrites without warning, and "it can only touch the
+# folders you chose" is a claim that holds even when the model is wrong
+# about something. Widening it stays a deliberate decision, made here.
+INBOX_DIR = Path(
+    os.getenv("INBOX_DIR", "").strip() or _desktop() / "agent-inbox"
+).expanduser()
+
 
 def _parse_workspaces() -> dict[str, Path]:
     """The directories the agent's file tools may touch, by name.
@@ -71,7 +84,11 @@ def _parse_workspaces() -> dict[str, Path]:
     touch the folders you nominated" is a claim that holds even when the
     model misbehaves, and `write_file` overwrites without warning.
     """
-    workspaces = {"sandbox": SANDBOX_DIR, "outputs": OUTPUTS_DIR}
+    workspaces = {
+        "sandbox": SANDBOX_DIR,
+        "inbox": INBOX_DIR,
+        "outputs": OUTPUTS_DIR,
+    }
 
     for entry in os.getenv("WORKSPACES", "").split(";"):
         entry = entry.strip()
@@ -80,7 +97,7 @@ def _parse_workspaces() -> dict[str, Path]:
         name, _, raw_path = entry.partition("=")
         name = name.strip().lower()
         path = Path(raw_path.strip()).expanduser()
-        if name and name not in ("sandbox", "outputs") and path.is_dir():
+        if name and name not in ("sandbox", "inbox", "outputs") and path.is_dir():
             workspaces[name] = path.resolve()
 
     return workspaces
@@ -144,6 +161,7 @@ def ensure_dirs() -> None:
     clone it does not exist and the checkpointer would fail to open."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
+    INBOX_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
 

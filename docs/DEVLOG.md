@@ -856,3 +856,220 @@ That is the whole claim of this phase, demonstrated on one task.
   the files against other tools until something closes them.
 - **No tests for the Office, browser or mail tools** -- they need the
   applications present, so they are outside the offline suite.
+
+---
+
+## Phase 6 -- A web interface of its own
+
+**Date:** 2026-10-11 to 2026-10-12
+**Goal:** Replace Streamlit with something that looks like a product.
+**Status:** Done. Third front end on the same graph.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `server.py` | Starlette API; execution streamed as server-sent events. |
+| `web/index.html`, `style.css`, `app.js` | The interface. No framework, no build step. |
+| `tools/report.py` | How the agent answers a question. |
+
+`core/` was not touched. Streamlit and the custom interface both drove
+the same compiled graph, which is the dividend from keeping `app_cli.py`
+free of agent logic in Phase 1.
+
+### Design decisions
+
+| Decision | Choice | Reasoning |
+|---|---|---|
+| Web framework | Starlette, already present as a Streamlit dependency | Routing, JSON and a streaming response is the whole requirement; FastAPI would add nothing. |
+| Execution transport | Server-sent events | A request that blocked until the agent finished would leave the page silent for a minute and then dump a result. Watching the work happen is most of the point. |
+| Front end | Plain HTML, CSS and JS | A few hundred lines of DOM work. A build step would cost more than it saved. |
+| Where gates come from | The checkpointed snapshot | So a refreshed browser, or a new session tomorrow, picks a paused run up where it stopped. |
+| Colour | One accent, used for meaning | On a screen where work is approved before it runs, colour should carry meaning: amber is the agent's voice, green and red mean only whether a step passed. |
+| Background motion | Transform and opacity only | Those the browser moves on the compositor without repainting. Animating a gradient's position repaints every frame, which on a page also streaming live updates is the difference between smooth and stuttering. |
+
+### Problems encountered
+
+38. **An icon with zero width.** The sidebar button rendered as an empty
+    square: a shared `button { padding: 9px 20px }` applied to a fixed
+    40px box leaves exactly nothing for the glyph. Only visible by
+    measuring the element -- it looked like a styling choice.
+
+39. **A wrong diagnosis, corrected by measuring.** Plans were failing
+    with "Model output did not match Plan", and the raw output in the
+    error appeared to stop mid-sentence, so the conclusion was
+    truncation and `max_output_tokens` was added. Checking properly:
+    `finish_reason` was `STOP` and the JSON was complete. **The "cut
+    off" output was this project's own 1500-character slice in the error
+    message** -- a misread of our own debug output. The real cause was an
+    unquoted `{{step_N.output}}` in a numeric field, repaired
+    mechanically in `Step`'s validator.
+
+40. **The agent could not answer a question.** Asked to show the second
+    entry of a CSV, it read the file and reported success with the whole
+    file as output. Every tool changed or inspected the world; none
+    could *say* anything, so a task could be executed perfectly and
+    leave the person who asked no better off. **Fix:** `report(answer)`,
+    which returns what it is given -- the value is that argument
+    resolution fills it from earlier outputs guided by the step's
+    intent. Adding a whole new category of capability cost one decorated
+    function and one prompt rule.
+
+41. **The composer never came back.** The task box was hidden when a run
+    started and never restored, leaving the page a dead end after every
+    task. It now returns as soon as a run stops waiting on the user, and
+    stays hidden only while a gate is open.
+
+---
+
+## Phase 7 -- Reaching the rest of the machine
+
+**Date:** 2026-10-12
+**Goal:** Stop being limited to the applications we anticipated.
+**Status:** 32 tools. Any Windows application, any website, and -- behind
+a gate -- arbitrary code.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `tools/desktop.py` | Any Windows app, through the accessibility tree. |
+| `tools/shell.py` | `run_python`, `run_command`. The last resort. |
+| `tools/browser.py` | Playwright, on a thread of its own. |
+| `tools/mail.py` | Gmail over IMAP/SMTP, registered only when configured. |
+| `tools/source_check.py` | Corroborating recorded values against their document. |
+| `tests/test_shell_guards.py` | 35 tests on the refusal list. |
+
+### Design decisions
+
+| Decision | Choice | Reasoning |
+|---|---|---|
+| Preference order | API > COM > accessibility > pixels | Roughly 99 / 99 / 85 / 65 per cent per step. The fallbacks exist so the agent is not helpless with an unanticipated app; they are not the first choice, and the docstrings say so, because the catalogue is a prompt. |
+| Generic click risk | The tool inspects its target | One click function cannot have one risk tier. Anything matching send/delete/pay/install is refused and routed to an IRREVERSIBLE variant. Substring matching, since a false positive costs one approval and a false negative does not. |
+| Shell tools | Built, but always IRREVERSIBLE | An agent that cannot reach an unanticipated tool is not much of a colleague. The gate showing the exact code is what keeps that from being reckless. |
+| The refusal list | Short, and described as a backstop | A long denylist invites the belief that anything not on it is safe. It guards against the unrecoverable; the real protection is a person reading the code at the gate. |
+| Email sending | The agent never sends | It composes; the person sends. A message to a real recipient cannot be recalled, and approving a plan is not consent to send *that particular wording*, which is only visible at the end. |
+| Outputs | A folder on the Desktop | Generated files were landing in the source tree, which is not where anyone looks for their own documents. |
+
+### Problems encountered
+
+42. **Playwright is bound to the thread that created it.** The server
+    runs each request on a pool thread, so step 1 and step 3 of one plan
+    arrived on different threads and the second failed with "cannot
+    switch to a different thread" -- while the browser sat there visibly
+    working. **Fix:** the browser owns one permanent thread and every
+    tool sends it work through a queue, the standard shape for wrapping
+    a thread-affine library.
+
+43. **A killed browser wedges its own profile.** Chromium marks a
+    profile in use with `SingletonLock` and removes it on a clean exit.
+    A browser that was killed leaves it behind, and every later launch
+    is refused for a profile nothing is using. **Fix:** clear stale lock
+    files before launching. Related: `_startup_error` was never reset,
+    so one failed start was permanent even after the cause went away.
+
+44. **A careless kill.** Clearing a wedged browser with
+    `taskkill /IM chrome.exe` would have killed the user's own Chrome --
+    it shares the image name. It matched nothing by luck. Processes are
+    now identified by executable path.
+
+45. **Typing into someone's open document.** The first desktop test used
+    `_find_window("Notepad")`, which matched the *first* window
+    containing that word -- the user's open `requirements.txt`, not a
+    blank one -- and replaced its contents. Undone immediately with
+    Ctrl+Z; nothing reached disk. **Fix:** when several windows match,
+    the tool refuses and lists them rather than picking one. Guessing
+    which of two things someone meant is the wrong answer here for the
+    same reason it is with an ambiguous date.
+
+46. **Two error messages forming a loop.** A second Excel instance made
+    `Workbooks.Open` return `None` rather than raise, so `excel_update`
+    died on a bare `AttributeError`; repair switched to `write_file`,
+    which failed on the file lock and suggested `excel_update`. Both
+    messages were individually correct and together had no exit. **Fix:**
+    the error names the second-instance problem and offers a third route
+    -- writing to `outputs/` -- that works whatever Excel is doing.
+    **Lesson:** error messages are part of the agent's control flow.
+    When a tool suggests an alternative, check the alternative cannot
+    bounce straight back.
+
+47. **Unusable tools in the catalogue.** A browser-composed email
+    verified correctly at every step, then the verifier chose
+    `find_sent` as its probe, could not connect without IMAP
+    credentials, and failed a step whose work had succeeded. The mail
+    tools registered unconditionally. **Fix:** they register only when
+    Gmail is configured. An unusable tool in the catalogue is not a
+    missing feature, it is a false promise, and the verifier believes it.
+
+48. **The resolver had only two jobs.** Its prompt distinguished
+    extracting a value (copy verbatim) from composing prose -- and
+    "write a copy of this CSV with a new column" is neither, so copying
+    won and the file came back unchanged. **Fix:** transformation is a
+    third job, with the trap stated outright, because most of the
+    content genuinely *is* meant to be copied. The verb in the intent
+    decides: read/get/extract copy, write/summarise/draft compose,
+    add/update/mark/sort transform.
+
+49. **The goal judge did not know what `outputs/` meant.** It read
+    "saved to outputs/promotions.csv" and "save it to the Desktop
+    folder" as two different places and failed a run that did exactly
+    what was asked. **Fix:** it is told what the workspace aliases
+    resolve to. The agent uses short names deliberately -- machine paths
+    in a plan are unreadable -- so whatever judges the plan has to know
+    them.
+
+50. **The wrong-date bug, closed.** An invoice dated 10/07/2026 "(US
+    format)" was filed as 2026-07-10 and every check passed, because
+    each asked whether a record existed rather than whether it was
+    right. Three prompt rules were tried first; each improved the
+    wording of the postcondition and none made the judge compare.
+    **Fix:** `tools/source_check.py` -- deterministic corroboration in
+    Python. Ambiguous dates are refused rather than guessed, explicit
+    format notes outrank geography, and the error names both readings.
+    Verified end to end: the agent made the same wrong reading, the tool
+    refused with an explanation, and the repair ladder filed 2026-10-07
+    unaided.
+
+### Where the project stands
+
+- 32 tools, 7,800 lines, 192 tests, all offline.
+- Six capability areas: files, documents, spreadsheets, database, web,
+  any Windows application -- plus a gated shell.
+- Five tools stop for human approval: `run_python`, `run_command`,
+  `delete_invoice`, `browser_click_confirmed`, `click_control_confirmed`.
+
+### Known gaps
+
+- **"The latest invoice from a vendor"** -- the original problem
+  statement says *latest*; selection is by vendor, not by date.
+- **No cancel mid-step.** The run is checkpointed, so closing the page is
+  safe, but a running step finishes.
+- **No LLM response cache.** Development still burns the daily quota and
+  failures do not reproduce, which made several bugs here harder to find
+  than they needed to be.
+- **No tests for the Office, browser, desktop or mail tools** -- they
+  need the applications present, so they sit outside the offline suite.
+- **`run_python` / `run_command` are a hole in every other guarantee.**
+  The agent reads documents it did not write, and every other tool is
+  safe against an injection because the tool is narrow. Here the only
+  thing between a malicious invoice and the machine is a person reading
+  the gate.
+
+### The pattern worth taking away
+
+Counting problem 49, a model judging without being shown what actually
+happened invented a confident answer **six times**: the step judge
+without the earlier output, the probe without the file it had touched,
+the goal judge without the tools that ran, again without the resolved
+arguments, again without the workspace aliases, and the original
+confabulation in Phase 1.
+
+Every time the instinct was to reword the prompt. Every time the fix was
+the inputs.
+
+The companion lesson, proven four times -- the ISO date, the click
+guard, the recipient check, the source corroboration:
+
+> A prompt is a request. A tool is a gate. Where correctness matters,
+> enforce it in code -- and make the refusal explain the fix, or the
+> agent cannot act on it.

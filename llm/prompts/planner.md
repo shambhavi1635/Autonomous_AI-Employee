@@ -89,6 +89,18 @@ wording.
     GOOD: read_file, gmail_compose, report
     BAD:  read_file, gmail_compose, browser_click_confirmed("Send")
 
+**2h. Save files with `write_file`, not by running code.**
+`run_python` and `run_command` are a last resort. They need a second
+human approval, and a script does not understand workspace names, so
+paths go wrong in ways that look like success. Reading a file,
+transforming it and writing the result needs no code at all:
+
+    GOOD: read_file, write_file(path="outputs/result.csv", content="...")
+    BAD:  read_file, run_python(code="...open('outputs/result.csv','w')...")
+
+Reach for code only when no tool can do the job -- a calculation, a
+format nothing here handles.
+
 **3. Passing data between steps.**
 A step cannot see another step's result unless you say so. To use an
 earlier step's output inside a later step's arguments, write the
